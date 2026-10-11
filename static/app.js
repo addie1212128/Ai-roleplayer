@@ -19,9 +19,21 @@ const prefs = {
 };
 
 // ---------- API ----------
-async function jget(u) { const r = await fetch(u); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText); return r.json(); }
+// Access token (only present when the server was bound beyond loopback). Captured
+// from ?token=… on first load, kept in sessionStorage, sent on every /api call.
+const TOKEN = (() => {
+  try {
+    const u = new URLSearchParams(location.search).get("token");
+    if (u) { sessionStorage.setItem("rp_token", u); return u; }
+    return sessionStorage.getItem("rp_token") || "";
+  } catch { return ""; }
+})();
+function authH(h) { return TOKEN ? { ...(h || {}), "X-RP-Token": TOKEN } : (h || {}); }
+function tokenQ() { return TOKEN ? ("?token=" + encodeURIComponent(TOKEN)) : ""; }
+
+async function jget(u) { const r = await fetch(u, { headers: authH() }); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText); return r.json(); }
 async function jsend(u, method, body) {
-  const r = await fetch(u, { method, headers: { "Content-Type": "application/json" }, body: body != null ? JSON.stringify(body) : undefined });
+  const r = await fetch(u, { method, headers: authH({ "Content-Type": "application/json" }), body: body != null ? JSON.stringify(body) : undefined });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
   return r.json();
 }
@@ -30,30 +42,34 @@ const api = {
   presets: (m) => jget("/api/presets?model=" + encodeURIComponent(m || "")),
   characters: () => jget("/api/characters"),
   saveCharacter: (c) => jsend(c.id ? `/api/characters/${c.id}` : "/api/characters", c.id ? "PUT" : "POST", c),
-  deleteCharacter: (id) => fetch(`/api/characters/${id}`, { method: "DELETE" }),
+  deleteCharacter: (id) => fetch(`/api/characters/${id}`, { method: "DELETE", headers: authH() }),
   importCharacter: (filename, data_b64) => jsend("/api/characters/import", "POST", { filename, data_b64 }),
   setAvatar: (cid, data_b64, ext) => jsend(`/api/characters/${cid}/avatar`, "POST", { data_b64, ext }),
-  clearAvatarImg: (cid) => fetch(`/api/characters/${cid}/avatar`, { method: "DELETE" }),
+  clearAvatarImg: (cid) => fetch(`/api/characters/${cid}/avatar`, { method: "DELETE", headers: authH() }),
   stories: () => jget("/api/stories"),
   getStory: (id) => jget(`/api/stories/${id}`),
   createStory: (s) => jsend("/api/stories", "POST", s),
   importStory: (filename, data_b64) => jsend("/api/stories/import", "POST", { filename, data_b64 }),
-  deleteStory: (id) => fetch(`/api/stories/${id}`, { method: "DELETE" }),
+  deleteStory: (id) => fetch(`/api/stories/${id}`, { method: "DELETE", headers: authH() }),
   storyMeta: (id, patch) => jsend(`/api/stories/${id}/meta`, "PUT", patch),
   editMessage: (id, idx, content) => jsend(`/api/stories/${id}/message/${idx}`, "PUT", { content }),
   selectSwipe: (id, idx, swipe_id) => jsend(`/api/stories/${id}/message/${idx}/swipe`, "PUT", { swipe_id }),
-  deleteFrom: (id, idx) => fetch(`/api/stories/${id}/message/${idx}`, { method: "DELETE" }),
+  deleteFrom: (id, idx) => fetch(`/api/stories/${id}/message/${idx}`, { method: "DELETE", headers: authH() }),
   personas: () => jget("/api/personas"),
   savePersona: (p) => jsend(p.id ? `/api/personas/${p.id}` : "/api/personas", p.id ? "PUT" : "POST", p),
-  deletePersona: (id) => fetch(`/api/personas/${id}`, { method: "DELETE" }),
+  deletePersona: (id) => fetch(`/api/personas/${id}`, { method: "DELETE", headers: authH() }),
   lorebooks: () => jget("/api/lorebooks"),
   saveLorebook: (b) => jsend(b.id ? `/api/lorebooks/${b.id}` : "/api/lorebooks", b.id ? "PUT" : "POST", b),
-  deleteLorebook: (id) => fetch(`/api/lorebooks/${id}`, { method: "DELETE" }),
+  deleteLorebook: (id) => fetch(`/api/lorebooks/${id}`, { method: "DELETE", headers: authH() }),
 };
 
 // ---------- helpers ----------
 function escapeHtml(s) { return (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
-function formatContent(s) { return escapeHtml(s).replace(/\*([^*]+)\*/g, "<em>$1</em>"); }
+function formatContent(s) {
+  return escapeHtml(s)
+    .replace(/\(\(\s*([\s\S]+?)\s*\)\)/g, '<span class="thought">($1)</span>')  // ((inner thoughts))
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");                                       // *actions*
+}
 function stripThink(s) {
   s = (s || "").replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "");
   const low = s.toLowerCase();
@@ -152,7 +168,10 @@ function updateHeader() {
   $("#settings-btn").classList.toggle("hidden", !open);
   $("#composer").classList.toggle("hidden", !open);
   $("#an-bar").classList.toggle("hidden", !open);
-  if (open) $("#an-input").value = (state.story.authors_note || {}).text || "";
+  if (open) {
+    $("#an-input").value = (state.story.authors_note || {}).text || "";
+    $("#mood-select").value = state.story.mood || "";
+  }
   renderGroupBar();
 }
 
@@ -219,7 +238,7 @@ async function chatAction(action, userText, charId) {
     tmpAvatar = sp ? avatarHtml(sp) : "👥";
   }
   tmp.innerHTML = `<div class="who">${tmpAvatar}</div><div class="col"><div class="bubble cursor"></div></div>`;
-  if ($("#empty-state")) renderMessages();
+  if ($(".empty-state")) renderMessages();  // clear any empty-state placeholder first
   $("#messages").appendChild(tmp);
   const tmpBubble = tmp.querySelector(".bubble");
   scrollToBottom();
@@ -232,7 +251,7 @@ async function chatAction(action, userText, charId) {
 
   try {
     const resp = await fetch("/api/chat", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: authH({ "Content-Type": "application/json" }),
       body: JSON.stringify({ story_id: state.story.id, action, user_message: userText || null, char_id: charId || null, settings: {} }),
       signal: state.abort.signal,
     });
@@ -428,7 +447,7 @@ function renderStories() {
       emoji: "📖", title: s.title, sub: `${s.character_name || ""} · ${s.turns} msgs`,
       onClick: () => openStory(s.id),
       actions: [
-        { label: "⤓", title: "Export", fn: () => window.open(`/api/stories/${s.id}/export`, "_blank") },
+        { label: "⤓", title: "Export", fn: () => window.open(`/api/stories/${s.id}/export${tokenQ()}`, "_blank") },
         { label: "🗑", title: "Delete", cls: "del", fn: async () => {
           if (!confirm(`Delete "${s.title}"?`)) return;
           await api.deleteStory(s.id);
@@ -490,6 +509,8 @@ function openCharModal(char) {
   const lbSel = $("#c-lorebook");
   lbSel.innerHTML = `<option value="">None</option>` + state.lorebooks.map((b) => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join("");
   lbSel.value = g("lorebook_id");
+  const pf = { "c-age": "age", "c-gender": "gender", "c-career": "career", "c-aspiration": "aspiration", "c-traits": "traits", "c-skills": "skills", "c-speech": "speech_style", "c-relationships": "relationships", "c-living": "living" };
+  for (const [id, key] of Object.entries(pf)) $("#" + id).value = g(key);
   $("#char-delete").classList.toggle("hidden", !char);
   $("#char-export").classList.toggle("hidden", !char);
   updatePermTokens();
@@ -524,6 +545,11 @@ async function saveCharFromModal() {
     lorebook_id: $("#c-lorebook").value || null,
     alternate_greetings: parseAltGreetings($("#c-altgreet").value),
     avatar_image: state.editingCharImage,
+    age: $("#c-age").value.trim(), gender: $("#c-gender").value.trim(),
+    career: $("#c-career").value.trim(), aspiration: $("#c-aspiration").value.trim(),
+    traits: $("#c-traits").value.trim(), skills: $("#c-skills").value.trim(),
+    speech_style: $("#c-speech").value.trim(), relationships: $("#c-relationships").value.trim(),
+    living: $("#c-living").value.trim(),
   };
   await api.saveCharacter(char);
   closeCharModal();
@@ -623,6 +649,8 @@ async function openSettings() {
   set("#s-reppen", s.repeat_penalty); set("#s-repn", s.repeat_last_n);
   $("#s-rag").checked = !!s.rag_enabled;
   $("#s-embed").value = s.embed_model || "nomic-embed-text";
+  $("#s-inner").checked = !!s.inner_monologue;
+  $("#s-scene").value = state.story.scene || "";
   $("#settings-modal").classList.remove("hidden");
 }
 async function saveSettings() {
@@ -632,8 +660,9 @@ async function saveSettings() {
     top_p: parseFloat($("#s-topp").value), top_k: parseInt($("#s-topk").value),
     repeat_penalty: parseFloat($("#s-reppen").value), repeat_last_n: parseInt($("#s-repn").value),
     rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
+    inner_monologue: $("#s-inner").checked,
   };
-  const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings };
+  const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value };
   state.story = await api.storyMeta(state.story.id, patch);
   $("#settings-modal").classList.add("hidden");
   updateHeader();
@@ -712,7 +741,7 @@ function init() {
     };
     reader.readAsDataURL(f);
   });
-  $("#backup-btn").onclick = () => window.open("/api/backup", "_blank");
+  $("#backup-btn").onclick = () => window.open("/api/backup" + tokenQ(), "_blank");
 
   // greeting chooser
   $("#greet-cancel").onclick = () => $("#greet-modal").classList.add("hidden");
@@ -750,14 +779,17 @@ function init() {
     reader.readAsDataURL(f);
   });
   $("#c-avatar-clear").onclick = async () => {
-    if (state.editingCharId && state.editingCharImage) { try { await api.clearAvatarImg(state.editingCharId); } catch {} }
+    if (state.editingCharId && state.editingCharImage) {
+      try { const r = await api.clearAvatarImg(state.editingCharId); if (!r.ok) throw new Error("server " + r.status); }
+      catch (e) { alert("Couldn't clear the image: " + e.message); return; }
+    }
     state.editingCharImage = null; renderAvatarPreview(); await refreshCharacters();
   };
   $("#char-delete").onclick = async () => {
     if (!state.editingCharId || !confirm("Delete this character? Saved stories keep working.")) return;
     await api.deleteCharacter(state.editingCharId); closeCharModal(); await refreshCharacters();
   };
-  $("#char-export").onclick = () => { if (state.editingCharId) window.open(`/api/characters/${state.editingCharId}/export`, "_blank"); };
+  $("#char-export").onclick = () => { if (state.editingCharId) window.open(`/api/characters/${state.editingCharId}/export${tokenQ()}`, "_blank"); };
   bindModal("#char-modal", []);
 
   // import
@@ -800,6 +832,12 @@ function init() {
     $("#s-minp").value = p.min_p; $("#s-topp").value = p.top_p; $("#s-topk").value = p.top_k;
     $("#s-reppen").value = p.repeat_penalty; $("#s-repn").value = p.repeat_last_n;
   };
+
+  // mood (save on change)
+  $("#mood-select").addEventListener("change", async () => {
+    if (!state.story) return;
+    state.story = await api.storyMeta(state.story.id, { mood: $("#mood-select").value });
+  });
 
   // author's note (save on blur)
   $("#an-input").addEventListener("change", async () => {

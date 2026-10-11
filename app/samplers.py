@@ -65,11 +65,33 @@ OLLAMA_OPTION_KEYS = [
 ]
 
 
+# Hard ceilings so a hand-crafted /api/chat body can't ask Ollama for a
+# giant KV cache (num_ctx) or runaway decode and OOM/hang the machine.
+_CLAMPS = {
+    "num_ctx": (256, 131072),
+    "num_predict": (16, 8192),
+    "top_k": (0, 1000),
+    "repeat_last_n": (0, 8192),
+    "temperature": (0.0, 3.0),
+    "top_p": (0.0, 1.0),
+    "min_p": (0.0, 1.0),
+    "repeat_penalty": (0.0, 2.0),
+}
+
+
 def build_options(settings: dict) -> dict:
-    """Pick only the keys Ollama understands, dropping Nones."""
+    """Pick only the keys Ollama understands, dropping Nones and clamping to
+    safe ranges so a malicious/buggy request can't exhaust memory."""
     opts = {}
     for k in OLLAMA_OPTION_KEYS:
         v = settings.get(k)
-        if v is not None:
-            opts[k] = v
+        if v is None:
+            continue
+        if k in _CLAMPS:
+            lo, hi = _CLAMPS[k]
+            try:
+                v = max(lo, min(hi, type(lo)(v) if isinstance(lo, int) else float(v)))
+            except (TypeError, ValueError):
+                continue
+        opts[k] = v
     return opts

@@ -131,6 +131,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .msg.user .bubble { background: var(--user); border-top-right-radius: 4px; }
 .msg.ai .bubble { background: var(--ai); border: 1px solid var(--border); border-top-left-radius: 4px; }
 .bubble em { color: var(--accent); font-style: italic; opacity: .95; }
+.bubble .thought { color: var(--muted); font-style: italic; opacity: .72; }
 .bubble.editing { outline: 2px solid var(--accent); }
 .cursor::after { content: "▋"; animation: blink 1s steps(2) infinite; color: var(--accent); }
 @keyframes blink { 50% { opacity: 0; } }
@@ -160,8 +161,9 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .group-pick .em { font-size: 20px; }
 .group-pick img.av { width: 26px; height: 26px; }
 
-.an-bar { padding: 8px 20px 0; background: var(--panel); }
-.an-bar input { background: var(--bg); border-color: var(--border); font-size: 13px; }
+.an-bar { padding: 8px 20px 0; background: var(--panel); display: flex; gap: 8px; align-items: center; }
+.an-bar input { background: var(--bg); border-color: var(--border); font-size: 13px; flex: 1; }
+.an-bar select { width: auto; flex: 0 0 auto; background: var(--bg); font-size: 13px; }
 
 .composer { display: flex; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); background: var(--panel); }
 .composer textarea { flex: 1; max-height: 160px; }

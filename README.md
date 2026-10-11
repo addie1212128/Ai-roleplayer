@@ -76,6 +76,14 @@ Windows, tick **"Add Python to PATH"** during install.
 
 Your browser opens at **<http://localhost:8000>**. Pick a character and play.
 
+> **Playing from another device (phone, couch)?** By default the app binds to
+> `127.0.0.1` (this machine only). If you set `HOST=0.0.0.0` to reach it over
+> your Wi-Fi, the API would otherwise be open to everyone on the network with
+> **no login** — so `run.py` automatically generates a one-time access **token**
+> and prints a URL with it. Open that exact URL; keep the token private. (If you
+> launch `uvicorn` directly instead of `run.py`, set `RP_TOKEN=<something>`
+> yourself before binding beyond loopback.)
+
 ---
 
 ## How to play

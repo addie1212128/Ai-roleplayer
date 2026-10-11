@@ -88,6 +88,13 @@
       <div id="group-bar" class="group-bar hidden"></div>
 
       <div id="an-bar" class="an-bar hidden">
+        <select id="mood-select" title="Current mood of the character">
+          <option value="">Mood…</option>
+          <option>Happy</option><option>Sad</option><option>Angry</option><option>Afraid</option>
+          <option>Confident</option><option>Nervous</option><option>Flirty</option><option>Playful</option>
+          <option>Focused</option><option>Tense</option><option>Embarrassed</option><option>Inspired</option>
+          <option>Energized</option><option>Calm</option><option>Suspicious</option><option>Heartbroken</option>
+        </select>
         <input id="an-input" type="text" placeholder="Author's note — a private nudge sent near the end of the prompt (tone, pacing, what should happen next)…" />
       </div>
 
@@ -169,6 +176,22 @@
           </label>
         </div>
       </details>
+      <details>
+        <summary>Profile details (optional) — richer, more consistent characters</summary>
+        <div class="row">
+          <label class="field" style="flex:1"><span>Age</span><input id="c-age" type="text" /></label>
+          <label class="field" style="flex:1"><span>Gender</span><input id="c-gender" type="text" /></label>
+        </div>
+        <div class="row">
+          <label class="field" style="flex:1"><span>Career</span><input id="c-career" type="text" /></label>
+          <label class="field" style="flex:1"><span>Aspiration</span><input id="c-aspiration" type="text" /></label>
+        </div>
+        <label class="field"><span>Traits <em>(comma-separated)</em></span><input id="c-traits" type="text" /></label>
+        <label class="field"><span>Skills <em>(comma-separated)</em></span><input id="c-skills" type="text" /></label>
+        <label class="field"><span>Speech style <em>(idiomatic tone / verbal tics)</em></span><input id="c-speech" type="text" /></label>
+        <label class="field"><span>Relationships</span><textarea id="c-relationships" rows="2"></textarea></label>
+        <label class="field"><span>Living situation</span><input id="c-living" type="text" /></label>
+      </details>
       <div class="modal-actions">
         <button id="char-delete" class="danger hidden">Delete</button>
         <button id="char-export" class="ghost hidden">Export card</button>
@@ -210,6 +233,8 @@
         <label class="field" style="flex:1"><span>Embedding model</span><input id="s-embed" type="text" placeholder="nomic-embed-text" /></label>
       </div>
       <p class="hint">RAG surfaces relevant older moments via embeddings. Pull the model first: <code>ollama pull nomic-embed-text</code>. Leave off if unsure.</p>
+      <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-inner" type="checkbox" style="width:auto" /> Inner monologue — characters show private ((thoughts))</label>
+      <label class="field"><span>Scene <em>(where / when / who's present — set once for this story)</em></span><textarea id="s-scene" rows="2"></textarea></label>
       <details>
         <summary>Advanced samplers</summary>
         <div class="row">

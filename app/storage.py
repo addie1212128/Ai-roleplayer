@@ -75,11 +75,14 @@ def _read(path: Path) -> Optional[dict]:
         return None
 
 
-def _write(path: Path, obj: dict) -> None:
-    """Atomic write: serialize to a temp file in the same dir, then os.replace."""
+def _write(path: Path, obj: dict, compact: bool = False) -> None:
+    """Atomic write: serialize to a temp file in the same dir, then os.replace.
+    `compact` drops pretty-printing for hot/large files (stories, vectors)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    text = (json.dumps(obj, ensure_ascii=False) if compact
+            else json.dumps(obj, indent=2, ensure_ascii=False))
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)  # atomic on POSIX and Windows
 
 
@@ -96,14 +99,14 @@ def _doc_get(dir_: Path, oid) -> Optional[dict]:
     return _read(dir_ / f"{oid}.json")
 
 
-def _doc_save(dir_: Path, doc: dict) -> dict:
+def _doc_save(dir_: Path, doc: dict, compact: bool = False) -> dict:
     # A missing OR unsafe id is replaced with a fresh one, so a client can
     # never steer the write path outside its store.
     if not _safe_id(doc.get("id")):
         doc["id"] = new_id()
         doc["created"] = time.time()
     doc["updated"] = time.time()
-    _write(dir_ / f"{doc['id']}.json", doc)
+    _write(dir_ / f"{doc['id']}.json", doc, compact=compact)
     return doc
 
 
@@ -160,7 +163,7 @@ def get_story(sid: str) -> Optional[dict]:
 
 
 def save_story(story: dict) -> dict:
-    return _doc_save(STORY_DIR, story)
+    return _doc_save(STORY_DIR, story, compact=True)  # hot path, can be large
 
 
 def delete_story(sid: str) -> bool:
@@ -183,7 +186,7 @@ def get_vec(sid: str) -> Optional[dict]:
 
 def save_vec(sid: str, data: dict) -> None:
     if _safe_id(sid):
-        _write(VEC_DIR / f"{sid}.json", data)
+        _write(VEC_DIR / f"{sid}.json", data, compact=True)  # vectors are large
 
 
 # ----- lorebooks --------------------------------------------------------------

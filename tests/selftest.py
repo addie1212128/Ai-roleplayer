@@ -46,6 +46,10 @@ def test_samplers():
     opts = build_options({"num_ctx": 16384, "temperature": 1.0, "keep_alive": "30m", "model": "x", "bogus": 1})
     check("build_options keeps num_ctx", opts.get("num_ctx") == 16384)
     check("build_options drops non-ollama keys", "keep_alive" not in opts and "model" not in opts and "bogus" not in opts)
+    clamped = build_options({"num_ctx": 10_000_000, "num_predict": 99999, "top_k": 99999, "temperature": 50})
+    check("clamp: num_ctx capped", clamped["num_ctx"] == 131072)
+    check("clamp: num_predict capped", clamped["num_predict"] == 8192)
+    check("clamp: temperature capped", clamped["temperature"] == 3.0)
 
 
 def test_strip_think():
@@ -62,6 +66,26 @@ def test_substitute():
     check("substitute single-pass (no re-substitution)", out2 == "{{user}} and Bob", out2)
 
 
+def test_paper_features():
+    character = {"name": "Rex", "description": "A pilot.", "personality": "Bold.", "scenario": "A hangar.",
+                 "career": "Astronaut", "age": "34", "traits": "brave, reckless",
+                 "speech_style": "clipped military jargon"}
+    story = {"messages": [{"role": "user", "content": "hi"}],
+             "scene": "Midnight on the launchpad, a storm rolling in.", "mood": "Tense"}
+    built = context.assemble_prompt(story, character, None, None, {"num_ctx": 8192, "inner_monologue": True})
+    allc = "\n".join(m["content"] for m in built["messages"])
+    check("paper: profile fields in prompt", "Career: Astronaut" in allc and "clipped military jargon" in allc)
+    check("paper: scene block injected", "Midnight on the launchpad" in allc)
+    check("paper: mood injected", "feeling Tense" in allc, allc[-200:])
+    check("paper: inner-monologue instruction present", "INNER MONOLOGUE" in allc and "((" in allc)
+    built2 = context.assemble_prompt(story, character, None, None, {"num_ctx": 8192})
+    allc2 = "\n".join(m["content"] for m in built2["messages"])
+    check("paper: inner monologue off by default", "INNER MONOLOGUE" not in allc2)
+    # empty profile -> no stray labels
+    plain = context.assemble_prompt({"messages": []}, {"name": "Q", "description": "d"}, None, None, {"num_ctx": 8192})
+    check("paper: no profile labels when empty", "Career:" not in plain["messages"][0]["content"])
+
+
 def test_storage_id_safety():
     saved = storage.save_persona({"id": "../../evil", "name": "n"})
     check("storage: unsafe id regenerated on save", storage._safe_id(saved["id"]))
@@ -76,6 +100,13 @@ def test_examples():
     roles = [m["role"] for m in msgs]
     check("examples parsed into 4 msgs", len(msgs) == 4, f"got {len(msgs)}")
     check("examples role order", roles == ["user", "assistant", "user", "assistant"], str(roles))
+    # examples are injected as ONE fenced system block, never as fake chat turns
+    built = context.assemble_prompt({"messages": [{"role": "user", "content": "hi"}]},
+                                    {"name": "Aria", "description": "d", "example_dialogue": ex}, None, None, {"num_ctx": 8192})
+    check("examples: injected as one system block",
+          any(m["role"] == "system" and "Example dialogue" in m["content"] for m in built["messages"]))
+    check("examples: not injected as fake assistant turns",
+          sum(1 for m in built["messages"] if m["role"] == "assistant") == 0)
 
 
 def test_lorebook():
@@ -271,6 +302,11 @@ def test_rag():
         check("rag: store persisted vectors", bool(store and store.get("chunks")))
         block = asyncio.run(rag.retrieve(story, "tell me about the dragon and castle", "fake", "http://x", k=2))
         check("rag: retrieves relevant moment", "DRAGON" in block, block[:80])
+        # pruning must persist even when nothing new is embedded, or deleted
+        # content would keep being retrieved from the stale sidecar.
+        short = {"id": story["id"], "messages": msgs[:3], "summaries": []}
+        asyncio.run(rag.update_store(short, "fake", "http://x"))
+        check("rag: prune persisted with no new embeds", len(storage.get_vec(story["id"])["chunks"]) == 0)
     finally:
         rag.embed_texts = orig
 
@@ -358,6 +394,14 @@ def test_integration():
     r = client.get("/api/models")
     check("api: models ok", r.json()["ok"] and "mistral-nemo:12b" in r.json()["models"])
 
+    # token auth: when API_TOKEN is set, /api requires it; the page still loads
+    main.API_TOKEN = "secret123"
+    check("auth: /api without token -> 401", client.get("/api/models").status_code == 401)
+    check("auth: /api with header token -> ok", client.get("/api/models", headers={"X-RP-Token": "secret123"}).json()["ok"])
+    check("auth: /api with query token -> ok", client.get("/api/models?token=secret123").json()["ok"])
+    check("auth: page loads without token", client.get("/").status_code == 200)
+    main.API_TOKEN = ""
+
     # character + story
     char = client.post("/api/characters", json={"name": "Aria", "description": "Tavern keeper.",
                                                  "personality": "Warm.", "scenario": "Rainy night.",
@@ -408,6 +452,8 @@ def test_integration():
     after2 = client.get(f"/api/stories/{story['id']}").json()["messages"]
     check("api: failed send leaves no orphan user turn", len(after2) == 3, f"len={len(after2)}")
     _fake_ctl["empty"] = False
+    r_big = client.post("/api/chat", json={"story_id": story["id"], "action": "send", "user_message": "x" * 100001})
+    check("api: oversized message rejected", "too long" in r_big.text)
 
     # export with a non-ASCII name must not 500 (Latin-1 header fix)
     jp = client.post("/api/characters", json={"name": "ゼロ丸", "description": "d", "greeting": "hi"}).json()
@@ -449,6 +495,9 @@ def test_integration():
                             json={"filename": "s.json", "data_b64": base64.b64encode(exp.content).decode()}).json()
     check("api: story import new id + messages kept",
           imp_story["id"] != story["id"] and len(imp_story["messages"]) == len(exp.json()["messages"]))
+    bad = base64.b64encode(json.dumps({"title": "x", "messages": [{"role": "user", "content": "ok"}, "nope"]}).encode()).decode()
+    check("api: import rejects malformed messages",
+          client.post("/api/stories/import", json={"filename": "b.json", "data_b64": bad}).status_code == 400)
 
     # full backup zip
     bk = client.get("/api/backup")
@@ -483,6 +532,11 @@ def test_integration():
     client.post("/api/chat", json={"story_id": gstory["id"], "action": "group_speak", "char_id": char["id"]})
     check("api: group_speak routes to chosen member",
           client.get(f"/api/stories/{gstory['id']}").json()["messages"][-1].get("char_id") == char["id"])
+    before = client.get(f"/api/stories/{gstory['id']}").json()["messages"][-1]
+    client.post("/api/chat", json={"story_id": gstory["id"], "action": "swipe"})
+    after = client.get(f"/api/stories/{gstory['id']}").json()["messages"][-1]
+    check("api: group swipe keeps attribution + adds alternate",
+          after.get("char_id") == before.get("char_id") and len(after["swipes"]) == len(before["swipes"]) + 1)
 
     # persona
     p = client.post("/api/personas", json={"name": "Sam", "description": "A traveler."}).json()
@@ -498,7 +552,7 @@ def main():
     for fn in [test_samplers, test_strip_think, test_substitute, test_examples,
                test_lorebook, test_assemble_order_and_budget, test_splice_depth,
                test_macro_resolution, test_depth_zero_and_est, test_cards_hardening,
-               test_cards, test_rag, test_storage_atomic, test_storage_id_safety, test_integration]:
+               test_cards, test_rag, test_paper_features, test_storage_atomic, test_storage_id_safety, test_integration]:
         try:
             fn()
         except Exception as e:

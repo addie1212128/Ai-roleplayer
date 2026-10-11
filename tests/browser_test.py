@@ -143,14 +143,18 @@ def main():
         page.wait_for_selector("#settings-modal:not(.hidden)", timeout=3000)
         check("UI: settings drawer opens", page.locator("#s-ctx").count() == 1)
         check("UI: settings num_ctx populated", int(page.input_value("#s-ctx")) >= 4096)
+        check("UI: inner-monologue + scene controls", page.locator("#s-inner").count() == 1 and page.locator("#s-scene").count() == 1)
         page.click("#settings-cancel")
 
         # character editor opens with advanced fields
         page.click("#edit-active-char")
         page.wait_for_selector("#char-modal:not(.hidden)", timeout=3000)
         check("UI: char editor has example field", page.locator("#c-example").count() == 1)
+        check("UI: char editor has profile fields", page.locator("#c-career").count() == 1)
         check("UI: permanent-token badge computed", "tokens" in page.inner_text("#perm-tokens"))
         page.click("#char-cancel")
+        check("UI: mood selector present", page.locator("#mood-select").count() == 1)
+        check("UI: inner-thought rendering", page.evaluate("formatContent('((I am afraid.))').includes('thought')"))
 
         # new Batch-A controls
         check("UI: backup + import-story buttons present",
