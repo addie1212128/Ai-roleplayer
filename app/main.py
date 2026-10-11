@@ -186,6 +186,18 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
+def _attachment_ascii(fname: str, fallback: str = "download") -> str:
+    """ASCII + PRINTABLE download name for a Content-Disposition filename=.
+
+    Control chars (CR/LF/NUL) are ASCII, so an unfiltered title would land a
+    newline in the header — a crash under a strict ASGI server and an HTTP
+    header-injection vector under a lax one. The full/original name is still
+    conveyed via the RFC 5987 filename* (percent-encoded), so nothing is lost.
+    """
+    out = "".join(c for c in (fname or "") if c.isascii() and c.isprintable() and c not in '"\\')
+    return out or fallback
+
+
 def _extract_json(text: str) -> Optional[dict]:
     """Pull the first JSON object out of a model reply (tolerates code fences /
     surrounding prose)."""
@@ -696,7 +708,7 @@ async def export_character(cid: str):
     fname = (char.get("name") or "character").replace(" ", "_")
     # HTTP headers are Latin-1; a non-ASCII or emoji name (common on imported
     # cards) would raise. Send an ASCII fallback + an RFC 5987 UTF-8 filename*.
-    ascii_name = "".join(c for c in fname if c.isascii() and c not in '"\\') or "character"
+    ascii_name = _attachment_ascii(fname, "character")
     return JSONResponse(card, headers={
         "Content-Disposition":
             f"attachment; filename=\"{ascii_name}.json\"; filename*=UTF-8''{quote(fname)}.json"})
@@ -723,7 +735,7 @@ async def export_story(sid: str):
     if not story:
         raise HTTPException(404, "Story not found")
     fname = (story.get("title") or "story").replace(" ", "_")
-    ascii_name = "".join(c for c in fname if c.isascii() and c not in '"\\') or "story"
+    ascii_name = _attachment_ascii(fname, "story")
     return JSONResponse(story, headers={
         "Content-Disposition":
             f"attachment; filename=\"{ascii_name}.json\"; filename*=UTF-8''{quote(fname)}.json"})
@@ -752,7 +764,7 @@ async def export_transcript(sid: str):
             out.append("")
     md = "\n".join(out)
     fname = (story.get("title") or "story").replace(" ", "_")
-    ascii_name = "".join(c for c in fname if c.isascii() and c not in '"\\') or "story"
+    ascii_name = _attachment_ascii(fname, "story")
     return Response(content=md, media_type="text/markdown", headers={
         "Content-Disposition":
             f"attachment; filename=\"{ascii_name}.md\"; filename*=UTF-8''{quote(fname)}.md"})

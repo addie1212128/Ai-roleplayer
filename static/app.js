@@ -303,7 +303,9 @@ async function impersonate() {
   if (!state.story.model) { alert("No model available. Pull one in Ollama first, e.g. `ollama pull mistral-nemo`."); return; }
   const input = $("#input"); const btn = $("#impersonate-btn");
   const saved = input.value;
-  state.streaming = true; if (btn) btn.disabled = true;
+  // toggleSendStop(true) swaps Send for Stop and disables the box — so Stop can
+  // cancel the draft and a mid-draft Send/Enter can't silently clear it.
+  state.streaming = true; toggleSendStop(true); if (btn) btn.disabled = true;
   state.abort = new AbortController();
   let full = ""; let errorMsg = null;
   input.value = ""; input.placeholder = "✍️ drafting your reply…";
@@ -313,26 +315,32 @@ async function impersonate() {
       body: JSON.stringify({ story_id: state.story.id, action: "impersonate", settings: {} }),
       signal: state.abort.signal,
     });
-    const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const parts = buf.split("\n\n"); buf = parts.pop();
-      for (const part of parts) {
-        const line = part.replace(/^data: /, "").trim();
-        if (!line) continue;
-        let obj; try { obj = JSON.parse(line); } catch { continue; }
-        if (obj.token) { full += obj.token; input.value = stripThink(full); input.dispatchEvent(new Event("input")); }
-        else if (obj.error) errorMsg = obj.error;
-        else if (obj.done && obj.text) { input.value = stripThink(obj.text); input.dispatchEvent(new Event("input")); }
+    if (!resp.ok) {
+      errorMsg = (await resp.json().catch(() => ({}))).detail || ("HTTP " + resp.status);
+    } else {
+      const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n"); buf = parts.pop();
+        for (const part of parts) {
+          const line = part.replace(/^data: /, "").trim();
+          if (!line) continue;
+          let obj; try { obj = JSON.parse(line); } catch { continue; }
+          if (obj.token) { full += obj.token; input.value = stripThink(full); input.dispatchEvent(new Event("input")); }
+          else if (obj.error) errorMsg = obj.error;
+          else if (obj.done && obj.text) { input.value = stripThink(obj.text); input.dispatchEvent(new Event("input")); }
+        }
       }
     }
   } catch (e) { if (e.name !== "AbortError") errorMsg = e.message; }
   finally {
-    state.streaming = false; state.abort = null; if (btn) btn.disabled = false;
+    state.streaming = false; state.abort = null; toggleSendStop(false); if (btn) btn.disabled = false;
     input.placeholder = "Write your action or dialogue…  (Enter to send, Shift+Enter for a new line)";
-    if (errorMsg) { showToast("⚠️ " + errorMsg); if (!full) { input.value = saved; input.dispatchEvent(new Event("input")); } }
+    // On any error, give the user their original text back (don't strand a
+    // partial, untrusted draft). A user-pressed Stop keeps whatever streamed.
+    if (errorMsg) { showToast("⚠️ " + errorMsg); input.value = saved; input.dispatchEvent(new Event("input")); }
     input.focus();
   }
 }

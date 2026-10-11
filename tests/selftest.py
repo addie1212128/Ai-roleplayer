@@ -585,6 +585,16 @@ def test_integration():
     check("api: transcript has turns",
           "# Imp" in tr.text and "**You:**" in tr.text and "**Aria:**" in tr.text, tr.text[:120])
 
+    # Content-Disposition is sanitized: a control char (CR/LF) in the title must
+    # not land in the header (crash / header-injection vector).
+    cstory = client.post("/api/stories", json={
+        "title": "Bad\nName", "character_id": char["id"], "character_name": "Aria",
+        "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]}).json()
+    ctr = client.get(f"/api/stories/{cstory['id']}/transcript")
+    cd = ctr.headers.get("content-disposition", "")
+    check("api: export header strips control chars",
+          ctr.status_code == 200 and "\n" not in cd and "\r" not in cd and "BadName.md" in cd, repr(cd[:90]))
+
 
 def main():
     print("Running AI Roleplayer backend self-test...\n")

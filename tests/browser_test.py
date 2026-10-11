@@ -149,6 +149,7 @@ def main():
         page.click("#impersonate-btn")
         page.wait_for_function("document.querySelector('#input').value.includes('traveler.')", timeout=8000)
         check("UI: impersonate drafts into composer", "traveler." in page.input_value("#input"))
+        page.wait_for_function("!document.querySelector('#input').disabled", timeout=8000)  # draft finished, composer re-enabled
         page.fill("#input", "")
 
         # open settings drawer
