@@ -560,6 +560,8 @@ async function openSettings() {
   set("#s-pred", s.num_predict); $("#s-pred-val").textContent = s.num_predict;
   set("#s-minp", s.min_p); set("#s-topp", s.top_p); set("#s-topk", s.top_k);
   set("#s-reppen", s.repeat_penalty); set("#s-repn", s.repeat_last_n);
+  $("#s-rag").checked = !!s.rag_enabled;
+  $("#s-embed").value = s.embed_model || "nomic-embed-text";
   $("#settings-modal").classList.remove("hidden");
 }
 async function saveSettings() {
@@ -568,6 +570,7 @@ async function saveSettings() {
     num_predict: parseInt($("#s-pred").value), min_p: parseFloat($("#s-minp").value),
     top_p: parseFloat($("#s-topp").value), top_k: parseInt($("#s-topk").value),
     repeat_penalty: parseFloat($("#s-reppen").value), repeat_last_n: parseInt($("#s-repn").value),
+    rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
   };
   const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings };
   state.story = await api.storyMeta(state.story.id, patch);

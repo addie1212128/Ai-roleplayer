@@ -327,7 +327,7 @@ def _splice_depth(history: list[dict], injections: list[tuple[int, dict]]) -> li
 # ---------------------------------------------------------------------------
 
 def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
-                    lorebook: Optional[dict], settings: dict) -> dict:
+                    lorebook: Optional[dict], settings: dict, rag_block: str = "") -> dict:
     """Build the messages list for Ollama. Returns {'messages', 'debug'}."""
     char_name = character.get("name", "the character")
     user_name = (persona or {}).get("name") or settings.get("user_name") or "You"
@@ -379,6 +379,8 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
         head.append({"role": "system", "content": lore["before"]})
     if summaries:
         head.append({"role": "system", "content": summaries})
+    if rag_block:
+        head.append({"role": "system", "content": rag_block})
 
     fixed_tokens = _msgs_tokens(head) + _msgs_tokens([m for _, m in depth_injections])
     example_tokens = _msgs_tokens(examples)

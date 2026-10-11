@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from . import cards, context, storage
+from . import cards, context, rag, storage
 from .samplers import DEFAULTS, build_options, preset_for
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
@@ -294,7 +294,21 @@ async def chat(req: ChatReq):
 
             ctx_story = dict(story)
             ctx_story["messages"] = ctx_msgs
-            built = context.assemble_prompt(ctx_story, character, persona, lorebook, settings)
+
+            # Optional semantic recall (degrades to "" if the embed model is absent).
+            rag_block = ""
+            if settings.get("rag_enabled"):
+                embed_model = settings.get("embed_model") or rag.DEFAULT_EMBED_MODEL
+                try:
+                    await rag.update_store(ctx_story, embed_model, OLLAMA_URL)
+                    last_user = next((m.get("content", "") for m in reversed(ctx_msgs)
+                                      if m.get("role") == "user"), "")
+                    rag_block = await rag.retrieve(ctx_story, last_user, embed_model, OLLAMA_URL)
+                except Exception:
+                    rag_block = ""
+
+            built = context.assemble_prompt(ctx_story, character, persona, lorebook,
+                                            settings, rag_block=rag_block)
             messages = built["messages"]
             if action == "continue":
                 messages.append({"role": "system", "content": (

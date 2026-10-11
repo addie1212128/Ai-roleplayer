@@ -31,9 +31,23 @@ STORY_DIR = DATA / "stories"
 LORE_DIR = DATA / "lorebooks"
 PERSONA_DIR = DATA / "personas"
 AVATAR_DIR = DATA / "avatars"
+VEC_DIR = DATA / "vectors"
 PRESET_DIR = ROOT / "presets" / "characters"
 
-_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR)
+_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR)
+
+
+def use_data_dir(path) -> None:
+    """Point every store at a new data root (used by tests)."""
+    global DATA, CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, _DIRS
+    DATA = Path(path)
+    CHAR_DIR = DATA / "characters"
+    STORY_DIR = DATA / "stories"
+    LORE_DIR = DATA / "lorebooks"
+    PERSONA_DIR = DATA / "personas"
+    AVATAR_DIR = DATA / "avatars"
+    VEC_DIR = DATA / "vectors"
+    _DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR)
 
 
 def _ensure_dirs() -> None:
@@ -150,7 +164,26 @@ def save_story(story: dict) -> dict:
 
 
 def delete_story(sid: str) -> bool:
-    return _doc_delete(STORY_DIR, sid)
+    ok = _doc_delete(STORY_DIR, sid)
+    if ok and _safe_id(sid):  # drop the vector sidecar too
+        vf = VEC_DIR / f"{sid}.json"
+        if vf.exists():
+            try:
+                vf.unlink()
+            except OSError:
+                pass
+    return ok
+
+
+# ----- vector stores (RAG, optional) -----------------------------------------
+
+def get_vec(sid: str) -> Optional[dict]:
+    return _doc_get(VEC_DIR, sid) if _safe_id(sid) else None
+
+
+def save_vec(sid: str, data: dict) -> None:
+    if _safe_id(sid):
+        _write(VEC_DIR / f"{sid}.json", data)
 
 
 # ----- lorebooks --------------------------------------------------------------

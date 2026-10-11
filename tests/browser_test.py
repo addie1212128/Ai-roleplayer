@@ -39,13 +39,7 @@ def check(name, cond, extra=""):
 # redirect storage to a temp dir before importing the app
 TMP = Path(tempfile.mkdtemp(prefix="rp_browser_"))
 import app.storage as storage  # noqa: E402
-storage.DATA = TMP / "data"
-storage.CHAR_DIR = storage.DATA / "characters"
-storage.STORY_DIR = storage.DATA / "stories"
-storage.LORE_DIR = storage.DATA / "lorebooks"
-storage.PERSONA_DIR = storage.DATA / "personas"
-storage.AVATAR_DIR = storage.DATA / "avatars"
-storage._DIRS = (storage.CHAR_DIR, storage.STORY_DIR, storage.LORE_DIR, storage.PERSONA_DIR, storage.AVATAR_DIR)
+storage.use_data_dir(TMP / "data")
 
 
 def start_fake_ollama(port):

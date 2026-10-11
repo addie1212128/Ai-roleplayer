@@ -202,6 +202,11 @@
         <span>Max reply length (num_predict) <output id="s-pred-val"></output></span>
         <input id="s-pred" type="range" min="128" max="1024" step="64" />
       </label>
+      <div class="row" style="align-items:flex-end">
+        <label class="inline" style="flex:0 0 auto; gap:6px; color:var(--muted); font-size:13px"><input id="s-rag" type="checkbox" style="width:auto" /> Long-term memory (RAG recall)</label>
+        <label class="field" style="flex:1"><span>Embedding model</span><input id="s-embed" type="text" placeholder="nomic-embed-text" /></label>
+      </div>
+      <p class="hint">RAG surfaces relevant older moments via embeddings. Pull the model first: <code>ollama pull nomic-embed-text</code>. Leave off if unsure.</p>
       <details>
         <summary>Advanced samplers</summary>
         <div class="row">

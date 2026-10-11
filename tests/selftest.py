@@ -31,15 +31,9 @@ def check(name, cond, extra=""):
 # --- redirect storage to a temp dir BEFORE importing the app ------------------
 TMP = Path(tempfile.mkdtemp(prefix="rp_test_"))
 import app.storage as storage  # noqa: E402
-storage.DATA = TMP / "data"
-storage.CHAR_DIR = storage.DATA / "characters"
-storage.STORY_DIR = storage.DATA / "stories"
-storage.LORE_DIR = storage.DATA / "lorebooks"
-storage.PERSONA_DIR = storage.DATA / "personas"
-storage.AVATAR_DIR = storage.DATA / "avatars"
-storage._DIRS = (storage.CHAR_DIR, storage.STORY_DIR, storage.LORE_DIR, storage.PERSONA_DIR, storage.AVATAR_DIR)
+storage.use_data_dir(TMP / "data")
 
-from app import cards, context          # noqa: E402
+from app import cards, context, rag     # noqa: E402
 from app.samplers import preset_for, build_options, DEFAULTS  # noqa: E402
 
 # ============================================================ pure logic tests
@@ -249,6 +243,38 @@ def test_cards_hardening():
     check("cards: zip-bomb defused (no card, fast)", got is None and (_t.time() - t0) < 2.0)
 
 
+def test_rag():
+    import asyncio
+    vocab = ["dragon", "castle", "ship", "forest", "king", "market"]
+
+    def fake_vec(t):
+        tl = t.lower()
+        return rag._normalize([1.0 if w in tl else 0.0 for w in vocab] + [0.05])
+
+    async def fake_embed(texts, model, url):
+        return [fake_vec(t) for t in texts]
+
+    check("rag: cosine identical ~1", abs(rag.cosine(fake_vec("dragon"), fake_vec("dragon")) - 1.0) < 1e-6)
+    check("rag: cosine unrelated ~0", abs(rag.cosine(fake_vec("dragon"), fake_vec("market"))) < 0.5)
+    check("rag: chunking splits long text", len(rag.chunk_messages([{"role": "user", "content": "w " * 1000}])) >= 2)
+
+    orig = rag.embed_texts
+    rag.embed_texts = fake_embed
+    try:
+        msgs = [{"role": "assistant", "content": "A fearsome DRAGON guards the castle hoard."}]
+        for i in range(20):
+            msgs.append({"role": "user", "content": f"we visit the market, day {i}"})
+            msgs.append({"role": "assistant", "content": f"the day is calm, {i}"})
+        story = storage.save_story({"messages": msgs, "summaries": []})
+        asyncio.run(rag.update_store(story, "fake", "http://x"))
+        store = storage.get_vec(story["id"])
+        check("rag: store persisted vectors", bool(store and store.get("chunks")))
+        block = asyncio.run(rag.retrieve(story, "tell me about the dragon and castle", "fake", "http://x", k=2))
+        check("rag: retrieves relevant moment", "DRAGON" in block, block[:80])
+    finally:
+        rag.embed_texts = orig
+
+
 def test_storage_atomic():
     storage.seed_presets()
     c = storage.save_character({"name": "Tmp", "description": "x", "custom_field": 42})
@@ -274,13 +300,24 @@ def _start_fake_ollama(port):
     async def tags():
         return {"models": [{"name": "mistral-nemo:12b"}]}
 
+    @fake.post("/api/embed")
+    async def embed(request: Request):
+        body = await request.json()
+        inp = body.get("input") or []
+        vocab = ["dragon", "castle", "ship", "forest", "king", "market"]
+
+        def vec(t):
+            tl = t.lower()
+            return [1.0 if w in tl else 0.0 for w in vocab] + [0.05]
+        return {"embeddings": [vec(t) for t in inp]}
+
     @fake.post("/api/chat")
     async def chat(request: Request):
         body = await request.json()
-        _last_payload.clear()
-        _last_payload.update(body)
-        if not body.get("stream"):  # summarizer path
+        if not body.get("stream"):  # summarizer path — don't record it
             return JSONResponse({"message": {"content": "- A thing happened."}, "done": True})
+        _last_payload.clear()
+        _last_payload.update(body)  # record only the streaming RP request
 
         async def gen():
             if _fake_ctl.get("empty"):   # simulate a failed/empty generation
@@ -417,6 +454,19 @@ def test_integration():
     bk = client.get("/api/backup")
     check("api: backup zip", bk.status_code == 200 and bk.content[:2] == b"PK")
 
+    # RAG end-to-end (via the fake /api/embed): a distinctive older moment is recalled
+    big = [{"role": "assistant", "content": "A fearsome DRAGON guards the castle hoard."}]
+    for i in range(20):
+        big.append({"role": "user", "content": f"we visit the market, day {i}"})
+        big.append({"role": "assistant", "content": f"the day is calm, {i}"})
+    rstory = client.post("/api/stories", json={"title": "RAG", "character_id": char["id"],
+                                               "character_name": "Aria", "model": "mistral-nemo:12b", "messages": big}).json()
+    client.put(f"/api/stories/{rstory['id']}/meta", json={"settings": {"rag_enabled": True, "embed_model": "fake-embed"}})
+    client.post("/api/chat", json={"story_id": rstory["id"], "action": "send", "user_message": "tell me about the dragon"})
+    sent = " ".join(m.get("content", "") for m in _last_payload.get("messages", []))
+    check("api: RAG injects a relevant earlier moment",
+          "Relevant earlier moments" in sent and "DRAGON" in sent, sent[:120])
+
     # persona
     p = client.post("/api/personas", json={"name": "Sam", "description": "A traveler."}).json()
     check("api: persona created", p["id"] and p["name"] == "Sam")
@@ -431,7 +481,7 @@ def main():
     for fn in [test_samplers, test_strip_think, test_substitute, test_examples,
                test_lorebook, test_assemble_order_and_budget, test_splice_depth,
                test_macro_resolution, test_depth_zero_and_est, test_cards_hardening,
-               test_cards, test_storage_atomic, test_storage_id_safety, test_integration]:
+               test_cards, test_rag, test_storage_atomic, test_storage_id_safety, test_integration]:
         try:
             fn()
         except Exception as e:
