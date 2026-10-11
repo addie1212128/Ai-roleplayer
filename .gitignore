@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# App data — the user's own characters & saved stories stay local
+data/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Roleplayer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- Banner shown when Ollama isn't reachable -->
+  <div id="ollama-banner" class="banner hidden">
+    ⚠️ Can't reach Ollama. Make sure it's installed and running
+    (<code>ollama serve</code>), then <a href="#" id="retry-ollama">retry</a>.
+  </div>
+
+  <div id="app">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="brand">🎭 <span>AI Roleplayer</span></div>
+
+      <button id="new-story-btn" class="primary full">+ New Story</button>
+
+      <div class="section-label">Your Stories</div>
+      <div id="story-list" class="list"></div>
+
+      <div class="section-label">
+        Characters
+        <button id="new-char-btn" class="mini" title="Create character">+</button>
+      </div>
+      <div id="character-list" class="list"></div>
+
+      <div class="sidebar-footer">
+        <label class="field">
+          <span>Model</span>
+          <select id="model-select"></select>
+        </label>
+        <label class="field">
+          <span>Creativity <output id="temp-val">0.8</output></span>
+          <input id="temp-slider" type="range" min="0" max="1.5" step="0.05" value="0.8" />
+        </label>
+        <label class="field">
+          <span>Your name</span>
+          <input id="player-name" type="text" placeholder="You" />
+        </label>
+      </div>
+    </aside>
+
+    <!-- Main chat area -->
+    <main id="chat-pane">
+      <header id="chat-header">
+        <div id="chat-title">
+          <span id="active-avatar">🎭</span>
+          <span id="active-name">Pick a character to begin</span>
+        </div>
+        <button id="edit-active-char" class="ghost hidden">Edit character</button>
+      </header>
+
+      <div id="messages" class="messages">
+        <div id="empty-state" class="empty-state">
+          <div class="big">🎭</div>
+          <h2>Start a roleplay</h2>
+          <p>Choose a character from the left — or create your own — and hit
+          <strong>New Story</strong> to begin an adventure.</p>
+        </div>
+      </div>
+
+      <form id="composer" class="composer hidden">
+        <textarea id="input" rows="1" placeholder="Write your action or dialogue…  (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button id="send-btn" type="submit" class="primary">Send</button>
+        <button id="stop-btn" type="button" class="danger hidden">Stop</button>
+      </form>
+    </main>
+  </div>
+
+  <!-- Character editor modal -->
+  <div id="char-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="char-modal-title">New Character</h3>
+      <label class="field">
+        <span>Avatar (emoji)</span>
+        <input id="c-avatar" type="text" maxlength="4" placeholder="🎭" />
+      </label>
+      <label class="field">
+        <span>Name</span>
+        <input id="c-name" type="text" placeholder="e.g. Captain Vale" />
+      </label>
+      <label class="field">
+        <span>Description <em>(who they are)</em></span>
+        <textarea id="c-description" rows="2" placeholder="A weathered starship captain with a dry wit…"></textarea>
+      </label>
+      <label class="field">
+        <span>Personality <em>(how they act &amp; speak)</em></span>
+        <textarea id="c-personality" rows="2" placeholder="Gruff but fair, loyal, speaks in clipped sentences…"></textarea>
+      </label>
+      <label class="field">
+        <span>Scenario <em>(the setting &amp; situation)</em></span>
+        <textarea id="c-scenario" rows="2" placeholder="You've just boarded her ship seeking passage to the outer colonies…"></textarea>
+      </label>
+      <label class="field">
+        <span>Greeting <em>(their opening message)</em></span>
+        <textarea id="c-greeting" rows="3" placeholder="*She looks up from the console* 'So you're the one looking for a ride.'"></textarea>
+      </label>
+      <div class="modal-actions">
+        <button id="char-delete" class="danger hidden">Delete</button>
+        <span class="spacer"></span>
+        <button id="char-cancel" class="ghost">Cancel</button>
+        <button id="char-save" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
