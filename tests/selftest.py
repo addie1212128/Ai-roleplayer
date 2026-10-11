@@ -609,10 +609,18 @@ def main():
             check(fn.__name__ + " (crashed)", False, repr(e))
             traceback.print_exc()
     print()
+    sys.stdout.flush()
     if FAILED:
         print(f"❌ {len(FAILED)} check(s) failed: {FAILED}")
-        sys.exit(1)
+        sys.stdout.flush()
+        os._exit(1)
     print("✅ All checks passed.")
+    sys.stdout.flush()
+    # The fake Ollama runs in daemon uvicorn threads; Python/uvicorn interpreter
+    # teardown can segfault at process exit AFTER every check has passed (exit 139
+    # in CI). The pass/fail result is already decided, so exit hard with the real
+    # status and skip the flaky native teardown.
+    os._exit(0)
 
 
 if __name__ == "__main__":
