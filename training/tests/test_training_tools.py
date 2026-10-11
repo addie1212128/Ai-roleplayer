@@ -109,6 +109,16 @@ CHARS = {"c1": {"id": "c1", "name": "Aria", "personality": "warm", "scenario": "
 PERSONAS = {"p1": {"id": "p1", "name": "Alex", "description": "a traveler"}}
 
 
+def test_assistant_content_uses_swipe():
+    print("_assistant_content uses the selected swipe")
+    m = {"role": "assistant", "content": "STALE", "swipes": ["A", "B", "C"], "swipe_id": 1}
+    check(ims._assistant_content(m, False) == "B", "reads swipes[swipe_id], not stale content")
+    check(ims._assistant_content({"role": "assistant", "content": "only"}, False) == "only",
+          "falls back to content when there are no swipes")
+    mg = {"role": "assistant", "content": "x", "swipes": ["hi"], "swipe_id": 0, "name": "Vale"}
+    check(ims._assistant_content(mg, True) == "Vale: hi", "group name-prefix applied to the swipe")
+
+
 def test_convert_single():
     print("convert_story (single character)")
     story = {"id": "s1", "title": "T", "character_id": "c1", "persona_id": "p1", "messages": [
@@ -185,7 +195,8 @@ def test_convert_filters():
 
 def main() -> int:
     for t in (test_clean_messages, test_messages_valid, test_sharegpt, test_slop,
-              test_dedup, test_system_prompt, test_normalize_prompt, test_convert_single,
+              test_dedup, test_system_prompt, test_normalize_prompt,
+              test_assistant_content_uses_swipe, test_convert_single,
               test_convert_group, test_convert_filters):
         t()
     print()

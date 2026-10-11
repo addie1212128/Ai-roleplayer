@@ -204,11 +204,14 @@ def _extract_json(text: str) -> Optional[dict]:
     if not text:
         return None
     t = text.strip()
-    i, j = t.find("{"), t.rfind("}")
-    if i == -1 or j == -1 or j < i:
+    i = t.find("{")
+    if i == -1:
         return None
     try:
-        obj = json.loads(t[i:j + 1])
+        # raw_decode parses the FIRST complete object and ignores any trailing
+        # text (e.g. a note the model appended), which slicing to the last '}'
+        # would wrongly fold in and invalidate.
+        obj, _ = json.JSONDecoder().raw_decode(t[i:])
         return obj if isinstance(obj, dict) else None
     except Exception:
         return None
@@ -447,8 +450,10 @@ async def chat(req: ChatReq):
             # and swap in their card; label past turns so speakers are distinct.
             user_name = (persona or {}).get("name") or settings.get("user_name") or "You"
             members = _member_chars(story) if _is_group(story) else []
-            # Impersonation writes the USER's line, so use the primary character's
-            # context rather than selecting a group speaker.
+            # Impersonation writes the USER's line, so don't select a group speaker
+            # — but still keep the roster + labeled history so the draft fits the
+            # scene and doesn't blur the members together.
+            grp_imp = action == "impersonate" and bool(members)
             active = _group_active(story, req, members) if (members and action != "impersonate") else None
             if active:
                 character = active
@@ -456,7 +461,8 @@ async def chat(req: ChatReq):
                 lorebook = storage.get_lorebook(lb_id) if lb_id else None
 
             ctx_story = dict(story)
-            ctx_story["messages"] = context.label_group_history(ctx_msgs) if active else ctx_msgs
+            ctx_story["messages"] = (context.label_group_history(ctx_msgs)
+                                     if (active or grp_imp) else ctx_msgs)
 
             # Optional semantic recall (degrades to "" if the embed model is absent).
             rag_block = ""
@@ -470,7 +476,12 @@ async def chat(req: ChatReq):
                 except Exception:
                     rag_block = ""
 
-            assemble_char = context.build_group_character(active, members) if active else character
+            if active:
+                assemble_char = context.build_group_character(active, members)
+            elif grp_imp:
+                assemble_char = context.build_scene_character(character, members)
+            else:
+                assemble_char = character
             built = context.assemble_prompt(ctx_story, assemble_char, persona, lorebook,
                                             settings, rag_block=rag_block)
             messages = built["messages"]

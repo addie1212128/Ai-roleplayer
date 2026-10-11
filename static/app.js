@@ -303,6 +303,8 @@ async function impersonate() {
   if (!state.story.model) { alert("No model available. Pull one in Ollama first, e.g. `ollama pull mistral-nemo`."); return; }
   const input = $("#input"); const btn = $("#impersonate-btn");
   const saved = input.value;
+  // Don't silently throw away a reply the user already started typing.
+  if (saved.trim() && !confirm("Replace your current draft with a suggested reply?")) return;
   // toggleSendStop(true) swaps Send for Stop and disables the box — so Stop can
   // cancel the draft and a mid-draft Send/Enter can't silently clear it.
   state.streaming = true; toggleSendStop(true); if (btn) btn.disabled = true;

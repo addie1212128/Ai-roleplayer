@@ -21,7 +21,7 @@ Verified (Oct 2026) gotchas this encodes:
 
 Usage:
     python training/export_gguf.py --adapter training/outputs/nemo-instruct-lora \\
-        --base mistralai/Mistral-Nemo-Base-2407 --template mistral \\
+        --base mistralai/Mistral-Nemo-Instruct-2407 --template mistral \\
         --llama-cpp-dir ~/llama.cpp --quants Q4_K_M Q5_K_M --name my-roleplayer
 """
 from __future__ import annotations
@@ -174,9 +174,19 @@ def run(args) -> int:
         _run([str(quantize), str(hp), str(outq), q, str(args.threads)])
         produced.append(outq)
 
-    # 4) Modelfile (built from the FIRST quant) + ollama create
-    preset = next((p for p in rp.MODEL_PRESETS.values() if p["template"] == args.template), None)
-    family = args.ollama_family or (preset["ollama_family"] if preset else args.template)
+    # 4) Modelfile (built from the FIRST quant) + ollama create.
+    # Resolve the Ollama family to inherit a template from. Only auto-resolve from
+    # a preset when the requested template is a family's NATIVE format; a
+    # cross-family template like chatml (the 24B path, or a Qwen model) must NOT
+    # silently inherit mistral-small's native [INST] template. Prefer an explicit
+    # --ollama-family; otherwise fall back to the template name (a harmless miss
+    # that gracefully drops to the built-in template).
+    family = args.ollama_family
+    if not family and args.template != "chatml":
+        preset = next((p for p in rp.MODEL_PRESETS.values() if p["template"] == args.template), None)
+        if preset:
+            family = preset["ollama_family"]
+    family = family or args.template
     primary = produced[0]
     mf = write_modelfile(merged, primary.name, args.template, family,
                          args.system, args.num_ctx, args.temperature,

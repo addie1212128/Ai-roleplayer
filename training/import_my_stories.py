@@ -83,8 +83,20 @@ def _normalize_prompt(msgs: list[dict]) -> list[dict] | None:
 
 
 def _assistant_content(m: dict, group: bool) -> str:
-    """Selected text for an assistant turn, name-prefixed in group scenes."""
-    text = str(m.get("content", "")).strip()
+    """Selected text for an assistant turn, name-prefixed in group scenes.
+
+    Reads the selected swipe (matching _swipe_texts) so the SFT reply and the DPO
+    'chosen' agree even on an inconsistent/hand-edited story where content
+    differs from swipes[swipe_id]; falls back to content when there are no swipes.
+    """
+    swipes = m.get("swipes")
+    if isinstance(swipes, list) and swipes:
+        sid = m.get("swipe_id", 0)
+        if not isinstance(sid, int) or not (0 <= sid < len(swipes)):
+            sid = 0
+        text = str(swipes[sid]).strip()
+    else:
+        text = str(m.get("content", "")).strip()
     if group and m.get("name"):
         return f"{str(m['name']).strip()}: {text}"
     return text
