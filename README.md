@@ -27,10 +27,14 @@ Tavern character-card import.
   in *italics*, with a scope-controlled prompt that stops the model speaking for
   you or breaking character. Optional **text-to-speech** reads replies aloud.
 - 🔄 **Full control of each reply** — **swipe** for alternates, **regenerate**,
-  **continue**, **edit** any message, or **delete from** a point.
+  **guided regenerate** (redo a reply with a one-off note like "shorter, angrier"),
+  **continue**, **edit** any message, **copy** it, or **delete from** a point.
+- 🌿 **Branches** — save the current story as a named timeline, keep playing, then
+  restore any branch to explore a different path. Restoring auto-saves your live
+  timeline first, so it's always reversible.
 - 🪄 **AI assists** — **impersonate** (let the model draft *your* next line when
   you're stuck), **✨ generate a character** from a one-line concept, a
-  **light/dark theme**, and **story search**.
+  **light/dark theme**, **story search**, and **keyboard shortcuts** (press `?`).
 - 🧑 **Personas** — tell the AI who *you* are for better, more personal replies.
 - 📥 **Import community characters** — load Tavern / SillyTavern **V2 & V3 cards**
   (`.json` or `.png`), so thousands of existing characters just work. Export too.
@@ -38,7 +42,9 @@ Tavern character-card import.
   **Markdown transcript** to keep/share), or grab a one-click zip of *all* your
   data so a lost machine never loses your saves.
 - 🎚️ **Per-model tuned settings** — sensible sampler presets per model, a
-  creativity slider, context size, reply length, and an advanced panel.
+  creativity slider, context size, reply length, and an advanced panel. **Save
+  your own named sampler presets**, give each **character its own default
+  creativity/length**, and ban clichés with a per-story **anti-slop phrase list**.
 - 📊 **Live context meter** — see exactly how much of the model's memory you're
   using, so you know when to start a fresh scene.
 
@@ -102,12 +108,17 @@ Your browser opens at **<http://localhost:8000>**. Pick a character and play.
 2. **Type an action or dialogue** and press **Enter**. Write in-character, e.g.
    *"I sit by the fire and order an ale."*
 3. Hover any reply for controls: **‹ 1/2 ›** swipe to a different version (the
-   **›** at the end generates a new one), **↻** regenerate, **↳** continue,
-   **✎** edit, **🗑** delete from here.
+   **›** at the end generates a new one), **↻** regenerate, **🎬** guided
+   regenerate (give a note), **↳** continue, **📋** copy, **✎** edit, **🗑**
+   delete from here.
 4. **⚙ Settings** (per story): model, persona, creativity, context size, reply
-   length, and advanced samplers.
+   length, advanced samplers, saveable **sampler presets**, and a **banned
+   words & phrases** list to kill clichés.
 5. The **author's note** bar above the composer is a private nudge to steer tone
    or what happens next — it's injected near the end of the prompt for max effect.
+6. **🌿 Branches** (header) save and restore alternate timelines; **⌨️** (or `?`)
+   lists keyboard shortcuts (`←/→` swap versions, `R` regenerate, `G` guided,
+   `C` focus the composer, `Esc` close a dialog).
 
 ### Tips for a smart, immersive bot
 - **The context size matters most.** The app defaults to 16K; raise it (Settings)
