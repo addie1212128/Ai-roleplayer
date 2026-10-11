@@ -293,6 +293,89 @@ async function chatAction(action, userText, charId) {
   }
 }
 
+// Draft the user's next line into the composer, persisting nothing.
+async function impersonate() {
+  if (!state.story || state.streaming) return;
+  if (!state.story.model) {
+    await api.storyMeta(state.story.id, { model: state.model });
+    state.story.model = state.model;
+  }
+  if (!state.story.model) { alert("No model available. Pull one in Ollama first, e.g. `ollama pull mistral-nemo`."); return; }
+  const input = $("#input"); const btn = $("#impersonate-btn");
+  const saved = input.value;
+  state.streaming = true; if (btn) btn.disabled = true;
+  state.abort = new AbortController();
+  let full = ""; let errorMsg = null;
+  input.value = ""; input.placeholder = "✍️ drafting your reply…";
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST", headers: authH({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ story_id: state.story.id, action: "impersonate", settings: {} }),
+      signal: state.abort.signal,
+    });
+    const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n"); buf = parts.pop();
+      for (const part of parts) {
+        const line = part.replace(/^data: /, "").trim();
+        if (!line) continue;
+        let obj; try { obj = JSON.parse(line); } catch { continue; }
+        if (obj.token) { full += obj.token; input.value = stripThink(full); input.dispatchEvent(new Event("input")); }
+        else if (obj.error) errorMsg = obj.error;
+        else if (obj.done && obj.text) { input.value = stripThink(obj.text); input.dispatchEvent(new Event("input")); }
+      }
+    }
+  } catch (e) { if (e.name !== "AbortError") errorMsg = e.message; }
+  finally {
+    state.streaming = false; state.abort = null; if (btn) btn.disabled = false;
+    input.placeholder = "Write your action or dialogue…  (Enter to send, Shift+Enter for a new line)";
+    if (errorMsg) { showToast("⚠️ " + errorMsg); if (!full) { input.value = saved; input.dispatchEvent(new Event("input")); } }
+    input.focus();
+  }
+}
+
+// Draft a character card from a one-line concept, filling the editor fields.
+async function generateCharacter() {
+  const concept = $("#c-concept").value.trim();
+  if (!concept) { showToast("Describe the character first."); return; }
+  if (!state.model) { showToast("Pick a model first (top bar)."); return; }
+  const btn = $("#c-generate"); const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = "✨ Generating…";
+  try {
+    const r = await fetch("/api/generate_character", {
+      method: "POST", headers: authH({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ concept, model: state.model }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) throw new Error(j.detail || "generation failed");
+    const c = j.character; const set = (id, v) => { if (v) $(id).value = v; };
+    set("#c-name", c.name); set("#c-description", c.description);
+    set("#c-personality", c.personality); set("#c-scenario", c.scenario);
+    set("#c-greeting", c.greeting);
+    updatePermTokens();
+    showToast("✨ Drafted — review and tweak, then Save.");
+  } catch (e) { showToast("⚠️ " + e.message); }
+  finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+// Theme: system (follow OS) / dark / light, remembered in localStorage.
+const THEME_LABELS = { system: "🌗 Auto", dark: "🌙 Dark", light: "☀️ Light" };
+function _theme() { try { return localStorage.getItem("rp-theme") || "system"; } catch (e) { return "system"; } }
+function applyTheme(t) {
+  if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  else document.documentElement.removeAttribute("data-theme");
+  const b = $("#theme-btn"); if (b) b.textContent = THEME_LABELS[t] || THEME_LABELS.system;
+}
+function cycleTheme() {
+  const order = ["system", "dark", "light"];
+  const next = order[(order.indexOf(_theme()) + 1) % order.length];
+  try { localStorage.setItem("rp-theme", next); } catch (e) {}
+  applyTheme(next);
+}
+
 function showToast(msg) {
   const t = $("#toast");
   t.textContent = msg;
@@ -442,12 +525,17 @@ function listItem({ emoji, emojiHtml, title, sub, onClick, actions }) {
 function renderStories() {
   const box = $("#story-list"); box.innerHTML = "";
   if (!state.stories.length) { box.innerHTML = `<div class="hint">No saved stories yet.</div>`; return; }
-  for (const s of state.stories) {
+  const q = (state.storyQuery || "").trim().toLowerCase();
+  const list = q ? state.stories.filter((s) =>
+    (s.title || "").toLowerCase().includes(q) || (s.character_name || "").toLowerCase().includes(q)) : state.stories;
+  if (!list.length) { box.innerHTML = `<div class="hint">No stories match “${escapeHtml(q)}”.</div>`; return; }
+  for (const s of list) {
     box.appendChild(listItem({
       emoji: "📖", title: s.title, sub: `${s.character_name || ""} · ${s.turns} msgs`,
       onClick: () => openStory(s.id),
       actions: [
-        { label: "⤓", title: "Export", fn: () => window.open(`/api/stories/${s.id}/export${tokenQ()}`, "_blank") },
+        { label: "⤓", title: "Export JSON", fn: () => window.open(`/api/stories/${s.id}/export${tokenQ()}`, "_blank") },
+        { label: "📝", title: "Export transcript (.md)", fn: () => window.open(`/api/stories/${s.id}/transcript${tokenQ()}`, "_blank") },
         { label: "🗑", title: "Delete", cls: "del", fn: async () => {
           if (!confirm(`Delete "${s.title}"?`)) return;
           await api.deleteStory(s.id);
@@ -742,6 +830,11 @@ function init() {
     reader.readAsDataURL(f);
   });
   $("#backup-btn").onclick = () => window.open("/api/backup" + tokenQ(), "_blank");
+  $("#story-search").addEventListener("input", (e) => { state.storyQuery = e.target.value; renderStories(); });
+  $("#theme-btn").addEventListener("click", cycleTheme);
+  applyTheme(_theme());
+  $("#impersonate-btn").addEventListener("click", impersonate);
+  $("#c-generate").addEventListener("click", generateCharacter);
 
   // greeting chooser
   $("#greet-cancel").onclick = () => $("#greet-modal").classList.add("hidden");

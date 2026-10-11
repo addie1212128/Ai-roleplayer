@@ -6,6 +6,15 @@
   <title>AI Roleplayer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎭</text></svg>" />
   <link rel="stylesheet" href="/static/style.css" />
+  <script>
+    // Apply the saved theme before first paint (no flash of the wrong theme).
+    (function () {
+      try {
+        var t = localStorage.getItem("rp-theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <div id="toast" class="toast hidden"></div>
@@ -27,6 +36,7 @@
           <button id="backup-btn" class="mini" title="Download a backup of everything">💾</button>
         </span>
       </div>
+      <input id="story-search" class="story-search" type="search" placeholder="Search stories…" />
       <div id="story-list" class="list"></div>
 
       <div class="section-label">
@@ -70,6 +80,7 @@
         </div>
         <div class="header-actions">
           <span id="ctx-meter" class="ctx-meter hidden" title="Prompt tokens used of context window">ctx —</span>
+          <button id="theme-btn" class="ghost" title="Theme: system / dark / light">🌗 Auto</button>
           <button id="tts-btn" class="ghost" title="Read replies aloud">🔈 Off</button>
           <button id="settings-btn" class="ghost hidden" title="Story settings">⚙ Settings</button>
           <button id="edit-active-char" class="ghost hidden">Edit character</button>
@@ -100,6 +111,7 @@
 
       <form id="composer" class="composer hidden">
         <textarea id="input" rows="1" placeholder="Write your action or dialogue…  (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button id="impersonate-btn" type="button" class="ghost" title="Suggest my reply (write my next line for me)">🪄</button>
         <button id="send-btn" type="submit" class="primary">Send</button>
         <button id="stop-btn" type="button" class="danger hidden">Stop</button>
       </form>
@@ -110,6 +122,10 @@
   <div id="char-modal" class="modal hidden">
     <div class="modal-card">
       <h3 id="char-modal-title">New Character</h3>
+      <div class="gen-row">
+        <input id="c-concept" type="text" placeholder="Describe a character in a sentence, then ✨ to auto-fill…" />
+        <button id="c-generate" type="button" class="ghost" title="Draft fields with your local model">✨ Generate</button>
+      </div>
       <div class="avatar-edit">
         <div id="c-avatar-preview" class="avatar-preview">🎭</div>
         <div class="avatar-actions">
