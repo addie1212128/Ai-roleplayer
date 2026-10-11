@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from . import cards, context, rag, storage
-from .samplers import DEFAULTS, build_options, preset_for
+from .samplers import DEFAULTS, build_options, pick_sampler_fields, preset_for
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 # When set (run.py sets it automatically if bound beyond loopback), every /api/
@@ -150,6 +150,13 @@ class Persona(BaseModel):
     description: str = ""
 
 
+class SamplerPreset(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: Optional[str] = None
+    name: str
+    settings: dict = {}
+
+
 class ImportReq(BaseModel):
     filename: str = "card"
     data_b64: str
@@ -218,10 +225,16 @@ def _extract_json(text: str) -> Optional[dict]:
         return None
 
 
-def effective_settings(story: dict, override: dict) -> dict:
-    """preset(model)  <-  story.settings  <-  per-call override."""
+def effective_settings(story: dict, override: dict, char_defaults: Optional[dict] = None) -> dict:
+    """preset(model)  <-  character defaults  <-  story.settings  <-  per-call override.
+
+    A character's `default_settings` sit just above the model preset, so a story
+    or an explicit override always wins. They can carry sampler knobs and the RP
+    toggles but never the model (that is fixed from the story/override below)."""
     model = (override or {}).get("model") or story.get("model") or ""
     s = preset_for(model)
+    if char_defaults:
+        s.update(pick_sampler_fields(char_defaults))
     s.update(story.get("settings") or {})
     s.update(override or {})
     s["model"] = model
@@ -399,7 +412,7 @@ async def chat(req: ChatReq):
                 return
             msgs = story.setdefault("messages", [])
             character, persona, lorebook = _resolve_actors(story)
-            settings = effective_settings(story, req.settings)
+            settings = effective_settings(story, req.settings, character.get("default_settings"))
             model = settings.get("model")
             if not model:
                 yield _sse({"error": "No model selected. Pull one in Ollama (e.g. "
@@ -460,6 +473,8 @@ async def chat(req: ChatReq):
                 character = active
                 lb_id = active.get("lorebook_id") or story.get("lorebook_id")
                 lorebook = storage.get_lorebook(lb_id) if lb_id else None
+                # Re-layer with the active speaker's own defaults (model stays fixed).
+                settings = effective_settings(story, req.settings, active.get("default_settings"))
 
             ctx_story = dict(story)
             ctx_story["messages"] = (context.label_group_history(ctx_msgs)
@@ -621,7 +636,7 @@ async def debug_prompt(story_id: str):
     if not story:
         raise HTTPException(404, "Story not found")
     character, persona, lorebook = _resolve_actors(story)
-    settings = effective_settings(story, {})
+    settings = effective_settings(story, {}, character.get("default_settings"))
     return context.assemble_prompt(story, character, persona, lorebook, settings)
 
 
@@ -982,6 +997,35 @@ async def update_persona(pid: str, persona: Persona):
 async def remove_persona(pid: str):
     if not storage.delete_persona(pid):
         raise HTTPException(404, "Persona not found")
+    return {"ok": True}
+
+
+# --- sampler presets (named generation-setting bundles) -----------------------
+
+@app.get("/api/sampler_presets")
+async def get_sampler_presets():
+    return storage.list_sampler_presets()
+
+
+@app.post("/api/sampler_presets")
+async def create_sampler_preset(preset: SamplerPreset):
+    data = preset.model_dump()
+    data["settings"] = pick_sampler_fields(data.get("settings") or {})
+    return storage.save_sampler_preset(data)
+
+
+@app.put("/api/sampler_presets/{pid}")
+async def update_sampler_preset(pid: str, preset: SamplerPreset):
+    data = preset.model_dump()
+    data["id"] = pid
+    data["settings"] = pick_sampler_fields(data.get("settings") or {})
+    return storage.save_sampler_preset(data)
+
+
+@app.delete("/api/sampler_presets/{pid}")
+async def remove_sampler_preset(pid: str):
+    if not storage.delete_sampler_preset(pid):
+        raise HTTPException(404, "Preset not found")
     return {"ok": True}
 
 

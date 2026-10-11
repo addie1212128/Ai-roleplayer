@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 const state = {
-  characters: [], stories: [], personas: [], lorebooks: [],
+  characters: [], stories: [], personas: [], lorebooks: [], samplerPresets: [],
   story: null, model: null,
   streaming: false, abort: null,
   editingCharId: null, editingPersonaId: null, editingLoreId: null,
@@ -61,6 +61,9 @@ const api = {
   lorebooks: () => jget("/api/lorebooks"),
   saveLorebook: (b) => jsend(b.id ? `/api/lorebooks/${b.id}` : "/api/lorebooks", b.id ? "PUT" : "POST", b),
   deleteLorebook: (id) => fetch(`/api/lorebooks/${id}`, { method: "DELETE", headers: authH() }),
+  samplerPresets: () => jget("/api/sampler_presets"),
+  saveSamplerPreset: (p) => jsend(p.id ? `/api/sampler_presets/${p.id}` : "/api/sampler_presets", p.id ? "PUT" : "POST", p),
+  deleteSamplerPreset: (id) => fetch(`/api/sampler_presets/${id}`, { method: "DELETE", headers: authH() }),
 };
 
 // ---------- helpers ----------
@@ -707,6 +710,9 @@ function openCharModal(char) {
   lbSel.value = g("lorebook_id");
   const pf = { "c-age": "age", "c-gender": "gender", "c-career": "career", "c-aspiration": "aspiration", "c-traits": "traits", "c-skills": "skills", "c-speech": "speech_style", "c-relationships": "relationships", "c-living": "living" };
   for (const [id, key] of Object.entries(pf)) $("#" + id).value = g(key);
+  const ds = (char && char.default_settings) || {};
+  $("#c-def-temp").value = ds.temperature != null ? ds.temperature : "";
+  $("#c-def-pred").value = ds.num_predict != null ? ds.num_predict : "";
   $("#char-delete").classList.toggle("hidden", !char);
   $("#char-export").classList.toggle("hidden", !char);
   updatePermTokens();
@@ -732,6 +738,11 @@ function updatePermTokens() {
 async function saveCharFromModal() {
   const name = $("#c-name").value.trim();
   if (!name) { alert("Give your character a name."); return; }
+  const ds = {};
+  const dTemp = parseFloat($("#c-def-temp").value);
+  if (!Number.isNaN(dTemp)) ds.temperature = dTemp;
+  const dPred = parseInt($("#c-def-pred").value, 10);
+  if (!Number.isNaN(dPred)) ds.num_predict = dPred;
   const char = {
     id: state.editingCharId, avatar: $("#c-avatar").value.trim() || "🎭", name,
     description: $("#c-description").value.trim(), personality: $("#c-personality").value.trim(),
@@ -746,6 +757,7 @@ async function saveCharFromModal() {
     traits: $("#c-traits").value.trim(), skills: $("#c-skills").value.trim(),
     speech_style: $("#c-speech").value.trim(), relationships: $("#c-relationships").value.trim(),
     living: $("#c-living").value.trim(),
+    default_settings: Object.keys(ds).length ? ds : null,
   };
   await api.saveCharacter(char);
   closeCharModal();
@@ -848,16 +860,51 @@ async function openSettings() {
   $("#s-inner").checked = !!s.inner_monologue;
   $("#s-scene").value = state.story.scene || "";
   $("#s-ban").value = s.ban_phrases || "";
+  $("#s-preset-name").value = "";
+  await loadSamplerPresets();
   $("#settings-modal").classList.remove("hidden");
 }
-async function saveSettings() {
-  const settings = {
+
+// The sampler knobs a story / preset / character-default can carry (read from
+// the settings-drawer inputs). Kept in one place so Save settings and Save
+// preset stay in sync.
+function currentSamplerInputs() {
+  return {
     temperature: parseFloat($("#s-temp").value), num_ctx: parseInt($("#s-ctx").value),
     num_predict: parseInt($("#s-pred").value), min_p: parseFloat($("#s-minp").value),
     top_p: parseFloat($("#s-topp").value), top_k: parseInt($("#s-topk").value),
     repeat_penalty: parseFloat($("#s-reppen").value), repeat_last_n: parseInt($("#s-repn").value),
-    rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
     inner_monologue: $("#s-inner").checked, ban_phrases: $("#s-ban").value,
+  };
+}
+
+// Push a settings bundle onto the drawer inputs (only keys it actually carries).
+function applySamplerSettings(s) {
+  s = s || {};
+  if (s.temperature != null) { $("#s-temp").value = s.temperature; $("#s-temp-val").textContent = (+s.temperature).toFixed(2); }
+  if (s.num_ctx != null) { $("#s-ctx").value = s.num_ctx; $("#s-ctx-val").textContent = s.num_ctx; }
+  if (s.num_predict != null) { $("#s-pred").value = s.num_predict; $("#s-pred-val").textContent = s.num_predict; }
+  if (s.min_p != null) $("#s-minp").value = s.min_p;
+  if (s.top_p != null) $("#s-topp").value = s.top_p;
+  if (s.top_k != null) $("#s-topk").value = s.top_k;
+  if (s.repeat_penalty != null) $("#s-reppen").value = s.repeat_penalty;
+  if (s.repeat_last_n != null) $("#s-repn").value = s.repeat_last_n;
+  if (s.inner_monologue != null) $("#s-inner").checked = !!s.inner_monologue;
+  if (s.ban_phrases != null) $("#s-ban").value = s.ban_phrases;
+}
+
+async function loadSamplerPresets(selectId) {
+  try { state.samplerPresets = await api.samplerPresets(); } catch { state.samplerPresets = []; }
+  const sel = $("#s-preset-list");
+  sel.innerHTML = `<option value="">— choose —</option>` +
+    state.samplerPresets.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
+  if (selectId) sel.value = selectId;
+}
+
+async function saveSettings() {
+  const settings = {
+    ...currentSamplerInputs(),
+    rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
   };
   const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value };
   state.story = await api.storyMeta(state.story.id, patch);
@@ -1034,6 +1081,31 @@ function init() {
     $("#s-pred").value = p.num_predict; $("#s-pred-val").textContent = p.num_predict;
     $("#s-minp").value = p.min_p; $("#s-topp").value = p.top_p; $("#s-topk").value = p.top_k;
     $("#s-reppen").value = p.repeat_penalty; $("#s-repn").value = p.repeat_last_n;
+  };
+
+  // saveable sampler presets
+  $("#s-preset-list").addEventListener("change", () => {
+    const p = state.samplerPresets.find((x) => x.id === $("#s-preset-list").value);
+    if (p) { applySamplerSettings(p.settings || {}); $("#s-preset-name").value = p.name; }
+  });
+  $("#s-preset-save").onclick = async () => {
+    const name = ($("#s-preset-name").value || "").trim()
+      || (state.samplerPresets.find((x) => x.id === $("#s-preset-list").value) || {}).name;
+    if (!name) { showToast("Name the preset first."); return; }
+    // Same name overwrites that preset; a new name creates one.
+    const match = state.samplerPresets.find((x) => (x.name || "").toLowerCase() === name.toLowerCase());
+    try {
+      const saved = await api.saveSamplerPreset({ id: match ? match.id : undefined, name, settings: currentSamplerInputs() });
+      await loadSamplerPresets(saved.id);
+      $("#s-preset-name").value = saved.name;
+      showToast("💾 Preset saved");
+    } catch (e) { showToast("⚠️ " + e.message); }
+  };
+  $("#s-preset-del").onclick = async () => {
+    const sel = $("#s-preset-list").value;
+    if (!sel) { showToast("Pick a preset to delete."); return; }
+    try { await api.deleteSamplerPreset(sel); $("#s-preset-name").value = ""; await loadSamplerPresets(); showToast("🗑 Preset deleted"); }
+    catch (e) { showToast("⚠️ " + e.message); }
   };
 
   // mood (save on change)

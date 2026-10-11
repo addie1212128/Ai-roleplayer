@@ -34,7 +34,7 @@ import app.storage as storage  # noqa: E402
 storage.use_data_dir(TMP / "data")
 
 from app import cards, context, rag     # noqa: E402
-from app.samplers import preset_for, build_options, DEFAULTS  # noqa: E402
+from app.samplers import preset_for, build_options, pick_sampler_fields, DEFAULTS  # noqa: E402
 
 # ============================================================ pure logic tests
 
@@ -50,6 +50,10 @@ def test_samplers():
     check("clamp: num_ctx capped", clamped["num_ctx"] == 131072)
     check("clamp: num_predict capped", clamped["num_predict"] == 8192)
     check("clamp: temperature capped", clamped["temperature"] == 3.0)
+    picked = pick_sampler_fields({"temperature": 0.7, "ban_phrases": "x", "bogus": 9, "model": "m", "seed": 3, "min_p": None})
+    check("pick_sampler_fields keeps knobs", picked.get("temperature") == 0.7 and picked.get("ban_phrases") == "x")
+    check("pick_sampler_fields drops junk/model/seed/None",
+          "bogus" not in picked and "model" not in picked and "seed" not in picked and "min_p" not in picked)
 
 
 def test_strip_think():
@@ -610,6 +614,37 @@ def test_integration():
     ban_sys = "\n".join(m.get("content", "") for m in _last_payload.get("messages", []) if m["role"] == "system")
     check("api: ban_phrases flow via story settings",
           "Banned words and phrases" in ban_sys and "mischievous glint" in ban_sys, ban_sys[-160:])
+
+    # per-character default sampler settings: the character's default applies,
+    # and an explicit story setting still overrides it.
+    dc = client.post("/api/characters", json={"name": "Dee", "description": "d", "greeting": "hi",
+                                              "default_settings": {"temperature": 0.4, "bogus": 1}}).json()
+    check("api: character stores default_settings", dc.get("default_settings", {}).get("temperature") == 0.4)
+    dstory = client.post("/api/stories", json={"title": "D", "character_id": dc["id"], "character_name": "Dee",
+                                               "model": "mistral-nemo:12b",
+                                               "messages": [{"role": "assistant", "content": "hi"},
+                                                            {"role": "user", "content": "yo"}]}).json()
+    client.post("/api/chat", json={"story_id": dstory["id"], "action": "regenerate"})
+    check("api: character default temperature applied",
+          _last_payload.get("options", {}).get("temperature") == 0.4, str(_last_payload.get("options")))
+    client.put(f"/api/stories/{dstory['id']}/meta", json={"settings": {"temperature": 1.3}})
+    client.post("/api/chat", json={"story_id": dstory["id"], "action": "regenerate"})
+    check("api: story setting overrides character default",
+          _last_payload.get("options", {}).get("temperature") == 1.3, str(_last_payload.get("options")))
+
+    # sampler presets (named generation-setting bundles): CRUD + field filtering
+    sp = client.post("/api/sampler_presets",
+                     json={"name": "Spicy", "settings": {"temperature": 1.4, "bogus": 9, "model": "x"}}).json()
+    check("api: sampler preset created + filtered",
+          bool(sp["id"]) and sp["settings"].get("temperature") == 1.4
+          and "bogus" not in sp["settings"] and "model" not in sp["settings"], str(sp.get("settings")))
+    check("api: sampler preset listed", any(p["id"] == sp["id"] for p in client.get("/api/sampler_presets").json()))
+    up = client.put(f"/api/sampler_presets/{sp['id']}",
+                    json={"name": "Spicy2", "settings": {"temperature": 1.5}}).json()
+    check("api: sampler preset updated", up["name"] == "Spicy2" and up["settings"]["temperature"] == 1.5)
+    check("api: sampler preset deleted", client.delete(f"/api/sampler_presets/{sp['id']}").json().get("ok"))
+    check("api: sampler preset gone",
+          not any(p["id"] == sp["id"] for p in client.get("/api/sampler_presets").json()))
 
     # character generator: a concept -> drafted card fields
     gj = client.post("/api/generate_character",

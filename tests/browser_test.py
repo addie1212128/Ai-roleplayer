@@ -181,6 +181,14 @@ def main():
         check("UI: settings num_ctx populated", int(page.input_value("#s-ctx")) >= 4096)
         check("UI: inner-monologue + scene controls", page.locator("#s-inner").count() == 1 and page.locator("#s-scene").count() == 1)
         check("UI: banned-phrases field present", page.locator("#s-ban").count() == 1)
+        # sampler presets: save the current sliders as a named, reusable preset
+        check("UI: sampler-preset controls present",
+              page.locator("#s-preset-list").count() == 1 and page.locator("#s-preset-save").count() == 1)
+        page.fill("#s-preset-name", "My Feel")
+        page.click("#s-preset-save")
+        page.wait_for_function("[...document.querySelectorAll('#s-preset-list option')].some(o => o.textContent === 'My Feel')", timeout=4000)
+        check("UI: saved sampler preset appears in list",
+              page.evaluate("[...document.querySelectorAll('#s-preset-list option')].some(o => o.textContent === 'My Feel')"))
         # Escape closes the top modal (keyboard-shortcut handler)
         page.keyboard.press("Escape")
         page.wait_for_function("document.querySelector('#settings-modal').classList.contains('hidden')", timeout=3000)
@@ -191,6 +199,8 @@ def main():
         page.wait_for_selector("#char-modal:not(.hidden)", timeout=3000)
         check("UI: char editor has example field", page.locator("#c-example").count() == 1)
         check("UI: char editor has profile fields", page.locator("#c-career").count() == 1)
+        check("UI: char default-settings fields",
+              page.locator("#c-def-temp").count() == 1 and page.locator("#c-def-pred").count() == 1)
         check("UI: permanent-token badge computed", "tokens" in page.inner_text("#perm-tokens"))
         # character generator fills the editor fields from a concept
         page.fill("#c-concept", "a fire mage")

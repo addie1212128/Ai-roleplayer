@@ -64,6 +64,25 @@ OLLAMA_OPTION_KEYS = [
     "num_ctx", "num_predict", "seed",
 ]
 
+# The tunable knobs a saved sampler preset or a per-character default may carry.
+# A superset of the Ollama options (minus seed) plus the in-prompt RP toggles, so
+# a preset can capture a whole "feel" (creativity + anti-slop + inner monologue).
+SAMPLER_PRESET_FIELDS = [
+    "temperature", "min_p", "top_p", "top_k",
+    "repeat_penalty", "repeat_last_n", "num_ctx", "num_predict",
+    "inner_monologue", "ban_phrases",
+]
+
+
+def pick_sampler_fields(settings: dict) -> dict:
+    """Keep only known sampler-preset keys, dropping Nones/junk, so a stored
+    preset or character default can never smuggle in arbitrary fields."""
+    out = {}
+    for k in SAMPLER_PRESET_FIELDS:
+        if settings.get(k) is not None:
+            out[k] = settings[k]
+    return out
+
 
 # Hard ceilings so a hand-crafted /api/chat body can't ask Ollama for a
 # giant KV cache (num_ctx) or runaway decode and OOM/hang the machine.
