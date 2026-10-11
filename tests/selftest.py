@@ -350,7 +350,13 @@ def _start_fake_ollama(port):
     @fake.post("/api/chat")
     async def chat(request: Request):
         body = await request.json()
-        if not body.get("stream"):  # summarizer path — don't record it
+        if not body.get("stream"):  # non-streaming paths — don't record them
+            sysmsg = (body.get("messages") or [{}])[0].get("content", "")
+            if "design characters" in sysmsg:   # character-generator path -> JSON
+                return JSONResponse({"message": {"content": (
+                    '{"name":"Ember","description":"A fire mage.","personality":"Bold.",'
+                    '"scenario":"A ruined tower.","greeting":"*flames flicker* Hello."}')},
+                    "done": True})
             return JSONResponse({"message": {"content": "- A thing happened."}, "done": True})
         _last_payload.clear()
         _last_payload.update(body)  # record only the streaming RP request
@@ -545,6 +551,39 @@ def test_integration():
     # delete-from truncation
     client.delete(f"/api/stories/{story['id']}/message/1")
     check("api: truncate", len(client.get(f"/api/stories/{story['id']}").json()["messages"]) == 1)
+
+    # --- new features -------------------------------------------------------
+    istory = client.post("/api/stories", json={
+        "title": "Imp", "character_id": char["id"], "character_name": "Aria",
+        "model": "mistral-nemo:12b",
+        "messages": [{"role": "assistant", "content": "Welcome in."},
+                     {"role": "user", "content": "I nod."}]}).json()
+
+    # impersonate: returns a drafted user line and persists NOTHING
+    before = len(client.get(f"/api/stories/{istory['id']}").json()["messages"])
+    r = client.post("/api/chat", json={"story_id": istory["id"], "action": "impersonate"})
+    itoks = [json.loads(l[6:]) for l in r.text.splitlines() if l.startswith("data: ")]
+    idone = [t for t in itoks if t.get("done")]
+    check("api: impersonate returns a draft",
+          bool(idone) and idone[0].get("impersonate") and "Hello there." in idone[0].get("text", ""),
+          r.text[:160])
+    after = len(client.get(f"/api/stories/{istory['id']}").json()["messages"])
+    check("api: impersonate persists nothing", after == before, f"{before}->{after}")
+
+    # character generator: a concept -> drafted card fields
+    gj = client.post("/api/generate_character",
+                     json={"concept": "a fire mage", "model": "mistral-nemo:12b"}).json()
+    check("api: generate_character returns fields",
+          gj.get("ok") and gj["character"]["name"] == "Ember" and bool(gj["character"]["greeting"]))
+    check("api: generate_character requires a model",
+          client.post("/api/generate_character", json={"concept": "x"}).status_code == 400)
+
+    # markdown transcript export
+    tr = client.get(f"/api/stories/{istory['id']}/transcript")
+    check("api: transcript is markdown",
+          tr.status_code == 200 and tr.headers["content-type"].startswith("text/markdown"))
+    check("api: transcript has turns",
+          "# Imp" in tr.text and "**You:**" in tr.text and "**Aria:**" in tr.text, tr.text[:120])
 
 
 def main():
