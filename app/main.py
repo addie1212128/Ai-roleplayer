@@ -1,13 +1,17 @@
 """AI Roleplayer — a local roleplay/story bot that runs entirely on your machine.
 
 The AI "brain" is a model served locally by Ollama (http://localhost:11434).
-This FastAPI app serves the web UI and proxies streaming chat to Ollama, plus
-stores your characters and saved stories as JSON files under ./data/.
+This FastAPI app serves the web UI, assembles the prompt SERVER-SIDE (character
+card + persona + lorebook + summaries + budgeted history + depth injections),
+streams the reply from Ollama, and OWNS story persistence (atomic, per-story
+locked) so client and server never clobber each other.
 
 Nothing is sent anywhere except your own local Ollama instance.
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import os
 from pathlib import Path
@@ -15,53 +19,108 @@ from typing import List, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from . import storage
+from . import cards, context, storage
+from .samplers import DEFAULTS, build_options, preset_for
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
 
 app = FastAPI(title="AI Roleplayer")
-
-# Copy bundled example characters into data/ on first launch.
 storage.seed_presets()
 
-
-# --- schemas ------------------------------------------------------------------
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
+# One lock per story serializes read-modify-write (incl. the whole generation),
+# so two turns on the same story can't interleave. Different stories run free.
+_story_locks: dict[str, asyncio.Lock] = {}
 
 
-class ChatRequest(BaseModel):
-    model: str
-    messages: List[ChatMessage]
-    system: Optional[str] = None
-    temperature: float = 0.8
+def _lock(sid: str) -> asyncio.Lock:
+    lock = _story_locks.get(sid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _story_locks[sid] = lock
+    return lock
 
+
+# --- schemas (extra='allow' so forward-compatible fields survive) -------------
 
 class Character(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: Optional[str] = None
     name: str
+    avatar: str = "🎭"
     description: str = ""
     personality: str = ""
     scenario: str = ""
     greeting: str = ""
-    avatar: str = "🎭"
+    example_dialogue: str = ""
+    system_prompt: str = ""
+    post_history_instructions: str = ""
+    lorebook_id: Optional[str] = None
+    pov: str = ""
 
 
-class Story(BaseModel):
-    id: Optional[str] = None
+class StoryCreate(BaseModel):
+    model_config = ConfigDict(extra="allow")
     title: str = "Untitled"
     character_id: Optional[str] = None
     character_name: Optional[str] = None
     model: Optional[str] = None
-    messages: List[ChatMessage] = []
+    persona_id: Optional[str] = None
+    messages: List[dict] = []
+    settings: dict = {}
+
+
+class StoryMeta(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    title: Optional[str] = None
+    model: Optional[str] = None
+    persona_id: Optional[str] = None
+    lorebook_id: Optional[str] = None
+    authors_note: Optional[dict] = None
+    settings: Optional[dict] = None
+
+
+class ChatReq(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    story_id: str
+    action: str = "send"           # send | regenerate | swipe | continue
+    user_message: Optional[str] = None
+    settings: dict = {}
+
+
+class MessageEdit(BaseModel):
+    content: str
+    swipe_id: Optional[int] = None
+
+
+class SwipeSelect(BaseModel):
+    swipe_id: int
+
+
+class Lorebook(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: Optional[str] = None
+    name: str = "Lorebook"
+    scanDepth: int = 4
+    tokenBudget: Optional[int] = None
+    entries: List[dict] = []
+
+
+class Persona(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: Optional[str] = None
+    name: str
+    description: str = ""
+
+
+class ImportReq(BaseModel):
+    filename: str = "card"
+    data_b64: str
 
 
 # --- helpers ------------------------------------------------------------------
@@ -70,67 +129,242 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
-# --- Ollama -------------------------------------------------------------------
+def effective_settings(story: dict, override: dict) -> dict:
+    """preset(model)  <-  story.settings  <-  per-call override."""
+    model = (override or {}).get("model") or story.get("model") or ""
+    s = preset_for(model)
+    s.update(story.get("settings") or {})
+    s.update(override or {})
+    s["model"] = model
+    return s
+
+
+def _resolve_actors(story: dict):
+    character = storage.get_character(story.get("character_id")) or {
+        "name": story.get("character_name") or "Narrator"}
+    persona = storage.get_persona(story["persona_id"]) if story.get("persona_id") else None
+    lb_id = character.get("lorebook_id") or story.get("lorebook_id")
+    lorebook = storage.get_lorebook(lb_id) if lb_id else None
+    return character, persona, lorebook
+
+
+async def _summarize_block(text: str, model: str) -> Optional[str]:
+    payload = {
+        "model": model, "stream": False, "keep_alive": "30m",
+        "messages": [
+            {"role": "system", "content": context.SUMMARIZE_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        "options": {"temperature": 0.0, "num_predict": 256, "num_ctx": 8192},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            r.raise_for_status()
+            out = r.json().get("message", {}).get("content", "")
+        return context.strip_think(out).strip() or None
+    except Exception:
+        return None
+
+
+async def _maybe_summarize(story: dict, model: str) -> bool:
+    """Summarize older message ranges once enough raw turns have accumulated."""
+    msgs = story.get("messages", [])
+    summaries = story.setdefault("summaries", [])
+    last = max((s["range"][1] for s in summaries if s.get("range")), default=0)
+    KEEP_RAW, TRIGGER = 8, 24
+    if len(msgs) - last < TRIGGER:
+        return False
+    end = len(msgs) - KEEP_RAW
+    block = msgs[last:end]
+    if len(block) < 12:
+        return False
+    lines = []
+    for m in block:
+        who = "User" if m.get("role") == "user" else (story.get("character_name") or "Character")
+        lines.append(f"{who}: {m.get('content', '')}")
+    summary = await _summarize_block("\n".join(lines), model)
+    if summary:
+        summaries.append({"range": [last, end], "text": summary})
+        storage.save_story(story)
+        return True
+    return False
+
+
+def _invalidate_summaries(story: dict, from_index: int) -> None:
+    story["summaries"] = [s for s in story.get("summaries", [])
+                          if s.get("range", [0, 0])[1] <= from_index]
+
+
+# --- Ollama / models ----------------------------------------------------------
 
 @app.get("/api/models")
 async def list_models():
-    """Return the models the user has pulled in Ollama, or a helpful error."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(f"{OLLAMA_URL}/api/tags")
             r.raise_for_status()
             data = r.json()
-        names = [m["name"] for m in data.get("models", [])]
-        return {"ok": True, "models": names}
-    except Exception as e:  # Ollama not running / unreachable
+        return {"ok": True, "models": [m["name"] for m in data.get("models", [])]}
+    except Exception as e:
         return {"ok": False, "models": [], "error": str(e)}
 
 
-@app.post("/api/chat")
-async def chat(req: ChatRequest):
-    """Stream a chat completion from Ollama back to the browser as SSE."""
-    messages: List[dict] = []
-    if req.system:
-        messages.append({"role": "system", "content": req.system})
-    messages.extend(m.model_dump() for m in req.messages)
+@app.get("/api/presets")
+async def presets(model: str = ""):
+    return {"defaults": DEFAULTS, "model": model, "settings": preset_for(model)}
 
-    payload = {
-        "model": req.model,
-        "messages": messages,
-        "stream": True,
-        "options": {"temperature": req.temperature},
-    }
+
+# --- chat ---------------------------------------------------------------------
+
+@app.post("/api/chat")
+async def chat(req: ChatReq):
+    if not storage.get_story(req.story_id):
+        raise HTTPException(404, "Story not found")
 
     async def generate():
-        try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as r:
-                    if r.status_code != 200:
-                        body = await r.aread()
-                        detail = body.decode("utf-8", errors="ignore")
-                        yield _sse({"error": f"Ollama returned {r.status_code}: {detail}"})
-                        return
-                    async for line in r.aiter_lines():
-                        if not line.strip():
-                            continue
-                        try:
-                            obj = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        content = obj.get("message", {}).get("content")
-                        if content:
-                            yield _sse({"token": content})
-                        if obj.get("done"):
-                            yield _sse({"done": True})
-                            return
-        except Exception as e:
-            yield _sse({"error": f"Could not reach Ollama at {OLLAMA_URL}. Is it running? ({e})"})
+        async with _lock(req.story_id):
+            story = storage.get_story(req.story_id)
+            if story is None:
+                yield _sse({"error": "Story vanished."})
+                return
+            msgs = story.setdefault("messages", [])
+            character, persona, lorebook = _resolve_actors(story)
+            settings = effective_settings(story, req.settings)
+            model = settings.get("model")
+            if not model:
+                yield _sse({"error": "No model selected. Pull one in Ollama (e.g. "
+                                     "`ollama pull mistral-nemo`) and pick it."})
+                return
 
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+            action = req.action
+            # Mutate history for the action and choose the context to send.
+            if action == "send":
+                if not (req.user_message or "").strip():
+                    yield _sse({"error": "Empty message."})
+                    return
+                msgs.append({"role": "user", "content": req.user_message.strip()})
+                storage.save_story(story)  # persist the user turn immediately
+                ctx_msgs = msgs
+            elif action == "regenerate":
+                if msgs and msgs[-1].get("role") == "assistant":
+                    msgs.pop()
+                    storage.save_story(story)
+                ctx_msgs = msgs
+            elif action == "swipe":
+                if not (msgs and msgs[-1].get("role") == "assistant"):
+                    yield _sse({"error": "Nothing to swipe yet."})
+                    return
+                ctx_msgs = msgs[:-1]       # identical context to the original reply
+            elif action == "continue":
+                if not (msgs and msgs[-1].get("role") == "assistant"):
+                    yield _sse({"error": "Nothing to continue yet."})
+                    return
+                ctx_msgs = msgs
+            else:
+                yield _sse({"error": f"Unknown action: {action}"})
+                return
+
+            ctx_story = dict(story)
+            ctx_story["messages"] = ctx_msgs
+            built = context.assemble_prompt(ctx_story, character, persona, lorebook, settings)
+            messages = built["messages"]
+            if action == "continue":
+                messages.append({"role": "system", "content": (
+                    f"[Continue {character.get('name', 'the character')}'s previous reply "
+                    f"from exactly where it left off. Do not repeat earlier text.]")})
+
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "keep_alive": settings.get("keep_alive", "30m"),
+                "options": build_options(settings),
+            }
+
+            full = ""
+            prompt_tokens = eval_tokens = None
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as r:
+                        if r.status_code != 200:
+                            body = await r.aread()
+                            yield _sse({"error": f"Ollama returned {r.status_code}: "
+                                                 f"{body.decode('utf-8', 'ignore')}"})
+                            return
+                        async for line in r.aiter_lines():
+                            if not line.strip():
+                                continue
+                            try:
+                                obj = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            tok = obj.get("message", {}).get("content")
+                            if tok:
+                                full += tok
+                                yield _sse({"token": tok})
+                            if obj.get("done"):
+                                prompt_tokens = obj.get("prompt_eval_count")
+                                eval_tokens = obj.get("eval_count")
+            except Exception as e:
+                yield _sse({"error": f"Could not reach Ollama at {OLLAMA_URL}. "
+                                     f"Is it running? ({e})"})
+                return
+
+            clean = context.strip_think(full)
+            if not clean.strip():
+                yield _sse({"error": "The model returned an empty reply. Try again, "
+                                     "lower the temperature, or pick another model."})
+                return
+
+            # Commit the result to the right place.
+            if action in ("send", "regenerate"):
+                msgs.append({"role": "assistant", "content": clean,
+                             "swipes": [clean], "swipe_id": 0})
+                idx = len(msgs) - 1
+            elif action == "swipe":
+                last = msgs[-1]
+                last.setdefault("swipes", [last.get("content", "")])
+                last["swipes"].append(clean)
+                last["swipe_id"] = len(last["swipes"]) - 1
+                last["content"] = clean
+                idx = len(msgs) - 1
+            else:  # continue
+                last = msgs[-1]
+                sep = "" if last.get("content", "").endswith((" ", "\n")) else " "
+                last["content"] = last.get("content", "") + sep + clean
+                if last.get("swipes"):
+                    last["swipes"][last.get("swipe_id", 0)] = last["content"]
+                idx = len(msgs) - 1
+
+            storage.save_story(story)
+            summarized = False
+            if action in ("send", "regenerate"):
+                summarized = await _maybe_summarize(story, model)
+
+            yield _sse({
+                "done": True,
+                "index": idx,
+                "message": msgs[idx],
+                "prompt_tokens": prompt_tokens,
+                "eval_tokens": eval_tokens,
+                "num_ctx": settings.get("num_ctx"),
+                "summarized": summarized,
+                "debug": built["debug"],
+            })
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/debug/prompt")
+async def debug_prompt(story_id: str):
+    story = storage.get_story(story_id)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    character, persona, lorebook = _resolve_actors(story)
+    settings = effective_settings(story, {})
+    return context.assemble_prompt(story, character, persona, lorebook, settings)
 
 
 # --- characters ---------------------------------------------------------------
@@ -167,6 +401,38 @@ async def remove_character(cid: str):
     return {"ok": True}
 
 
+@app.post("/api/characters/import")
+async def import_character(req: ImportReq):
+    try:
+        raw = base64.b64decode(req.data_b64)
+    except Exception:
+        raise HTTPException(400, "Could not decode the uploaded file.")
+    try:
+        parsed = cards.parse_card_bytes(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    char = parsed["character"]
+    book = parsed.get("character_book")
+    if book:
+        lb = cards.lorebook_from_character_book(book, f"{char['name']} — lorebook")
+        if lb and lb.get("entries"):
+            saved_book = storage.save_lorebook(lb)
+            char["lorebook_id"] = saved_book["id"]
+    saved = storage.save_character(char)
+    return saved
+
+
+@app.get("/api/characters/{cid}/export")
+async def export_character(cid: str):
+    char = storage.get_character(cid)
+    if not char:
+        raise HTTPException(404, "Character not found")
+    card = cards.card_from_character(char)
+    fname = (char.get("name") or "character").replace(" ", "_")
+    return JSONResponse(card, headers={
+        "Content-Disposition": f'attachment; filename="{fname}.json"'})
+
+
 # --- stories ------------------------------------------------------------------
 
 @app.get("/api/stories")
@@ -183,14 +449,15 @@ async def get_story(sid: str):
 
 
 @app.post("/api/stories")
-async def create_story(story: Story):
-    return storage.save_story(story.model_dump())
-
-
-@app.put("/api/stories/{sid}")
-async def update_story(sid: str, story: Story):
+async def create_story(story: StoryCreate):
     data = story.model_dump()
-    data["id"] = sid
+    # Normalize the seeded greeting into the swipe-aware message shape.
+    for m in data.get("messages", []):
+        if m.get("role") == "assistant" and "swipes" not in m:
+            m["swipes"] = [m.get("content", "")]
+            m["swipe_id"] = 0
+    data.setdefault("summaries", [])
+    data.setdefault("authors_note", {"text": "", "depth": 4, "role": "system"})
     return storage.save_story(data)
 
 
@@ -198,6 +465,134 @@ async def update_story(sid: str, story: Story):
 async def remove_story(sid: str):
     if not storage.delete_story(sid):
         raise HTTPException(404, "Story not found")
+    return {"ok": True}
+
+
+@app.put("/api/stories/{sid}/meta")
+async def update_story_meta(sid: str, meta: StoryMeta):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        patch = {k: v for k, v in meta.model_dump().items() if v is not None}
+        story.update(patch)
+        return storage.save_story(story)
+
+
+@app.put("/api/stories/{sid}/message/{idx}")
+async def edit_message(sid: str, idx: int, edit: MessageEdit):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        msgs = story.get("messages", [])
+        if idx < 0 or idx >= len(msgs):
+            raise HTTPException(404, "Message index out of range")
+        m = msgs[idx]
+        m["content"] = edit.content
+        if m.get("swipes"):
+            sid_i = edit.swipe_id if edit.swipe_id is not None else m.get("swipe_id", 0)
+            if 0 <= sid_i < len(m["swipes"]):
+                m["swipes"][sid_i] = edit.content
+                m["swipe_id"] = sid_i
+        _invalidate_summaries(story, idx)
+        storage.save_story(story)
+        return m
+
+
+@app.put("/api/stories/{sid}/message/{idx}/swipe")
+async def select_swipe(sid: str, idx: int, sel: SwipeSelect):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        msgs = story.get("messages", [])
+        if idx < 0 or idx >= len(msgs):
+            raise HTTPException(404, "Message index out of range")
+        m = msgs[idx]
+        swipes = m.get("swipes") or [m.get("content", "")]
+        if not (0 <= sel.swipe_id < len(swipes)):
+            raise HTTPException(400, "Swipe index out of range")
+        m["swipes"] = swipes
+        m["swipe_id"] = sel.swipe_id
+        m["content"] = swipes[sel.swipe_id]
+        storage.save_story(story)
+        return m
+
+
+@app.delete("/api/stories/{sid}/message/{idx}")
+async def delete_from(sid: str, idx: int):
+    """Truncate the story to messages before `idx` (inclusive delete of idx…end)."""
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        msgs = story.get("messages", [])
+        if idx < 0 or idx > len(msgs):
+            raise HTTPException(404, "Message index out of range")
+        story["messages"] = msgs[:idx]
+        _invalidate_summaries(story, idx)
+        storage.save_story(story)
+        return {"ok": True, "length": len(story["messages"])}
+
+
+# --- lorebooks ----------------------------------------------------------------
+
+@app.get("/api/lorebooks")
+async def get_lorebooks():
+    return storage.list_lorebooks()
+
+
+@app.get("/api/lorebooks/{bid}")
+async def get_lorebook(bid: str):
+    book = storage.get_lorebook(bid)
+    if not book:
+        raise HTTPException(404, "Lorebook not found")
+    return book
+
+
+@app.post("/api/lorebooks")
+async def create_lorebook(book: Lorebook):
+    return storage.save_lorebook(book.model_dump())
+
+
+@app.put("/api/lorebooks/{bid}")
+async def update_lorebook(bid: str, book: Lorebook):
+    data = book.model_dump()
+    data["id"] = bid
+    return storage.save_lorebook(data)
+
+
+@app.delete("/api/lorebooks/{bid}")
+async def remove_lorebook(bid: str):
+    if not storage.delete_lorebook(bid):
+        raise HTTPException(404, "Lorebook not found")
+    return {"ok": True}
+
+
+# --- personas -----------------------------------------------------------------
+
+@app.get("/api/personas")
+async def get_personas():
+    return storage.list_personas()
+
+
+@app.post("/api/personas")
+async def create_persona(persona: Persona):
+    return storage.save_persona(persona.model_dump())
+
+
+@app.put("/api/personas/{pid}")
+async def update_persona(pid: str, persona: Persona):
+    data = persona.model_dump()
+    data["id"] = pid
+    return storage.save_persona(data)
+
+
+@app.delete("/api/personas/{pid}")
+async def remove_persona(pid: str):
+    if not storage.delete_persona(pid):
+        raise HTTPException(404, "Persona not found")
     return {"ok": True}
 
 

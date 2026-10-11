@@ -1,12 +1,14 @@
-"""Simple JSON-file storage for characters and story sessions.
+"""JSON-file storage for characters, stories, lorebooks, and personas.
 
-Everything lives under ./data/ (git-ignored) so the user's own characters and
-saved roleplays stay local to their machine. Bundled example characters in
-./presets/characters/ are copied in on first run.
+Everything lives under ./data/ (git-ignored) so the user's own content stays
+local. Bundled example characters in ./presets/characters/ are copied in on
+first run. Writes are atomic (temp file + os.replace) so a crash or a second
+writer can't leave a half-written / corrupt file.
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 import uuid
@@ -17,16 +19,19 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 CHAR_DIR = DATA / "characters"
 STORY_DIR = DATA / "stories"
+LORE_DIR = DATA / "lorebooks"
+PERSONA_DIR = DATA / "personas"
 PRESET_DIR = ROOT / "presets" / "characters"
+
+_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR)
 
 
 def _ensure_dirs() -> None:
-    CHAR_DIR.mkdir(parents=True, exist_ok=True)
-    STORY_DIR.mkdir(parents=True, exist_ok=True)
+    for d in _DIRS:
+        d.mkdir(parents=True, exist_ok=True)
 
 
 def seed_presets() -> None:
-    """Copy bundled example characters into data/ the first time we run."""
     _ensure_dirs()
     if any(CHAR_DIR.glob("*.json")):
         return
@@ -47,14 +52,22 @@ def _read(path: Path) -> Optional[dict]:
 
 
 def _write(path: Path, obj: dict) -> None:
-    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    """Atomic write: serialize to a temp file in the same dir, then os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)  # atomic on POSIX and Windows
+
+
+def _list(dir_: Path) -> list[dict]:
+    _ensure_dirs()
+    return [o for f in sorted(dir_.glob("*.json")) if (o := _read(f))]
 
 
 # ----- characters -------------------------------------------------------------
 
 def list_characters() -> list[dict]:
-    _ensure_dirs()
-    chars = [c for f in sorted(CHAR_DIR.glob("*.json")) if (c := _read(f))]
+    chars = _list(CHAR_DIR)
     chars.sort(key=lambda c: c.get("name", "").lower())
     return chars
 
@@ -84,13 +97,8 @@ def delete_character(cid: str) -> bool:
 # ----- stories ----------------------------------------------------------------
 
 def list_stories() -> list[dict]:
-    """Return lightweight metadata for each saved story (no full message log)."""
-    _ensure_dirs()
     out = []
-    for f in sorted(STORY_DIR.glob("*.json")):
-        s = _read(f)
-        if not s:
-            continue
+    for s in _list(STORY_DIR):
         out.append({
             "id": s.get("id"),
             "title": s.get("title", "Untitled"),
@@ -120,6 +128,64 @@ def save_story(story: dict) -> dict:
 
 def delete_story(sid: str) -> bool:
     f = STORY_DIR / f"{sid}.json"
+    if f.exists():
+        f.unlink()
+        return True
+    return False
+
+
+# ----- lorebooks --------------------------------------------------------------
+
+def list_lorebooks() -> list[dict]:
+    books = _list(LORE_DIR)
+    books.sort(key=lambda b: b.get("name", "").lower())
+    return books
+
+
+def get_lorebook(bid: str) -> Optional[dict]:
+    return _read(LORE_DIR / f"{bid}.json")
+
+
+def save_lorebook(book: dict) -> dict:
+    _ensure_dirs()
+    if not book.get("id"):
+        book["id"] = new_id()
+        book["created"] = time.time()
+    book["updated"] = time.time()
+    _write(LORE_DIR / f"{book['id']}.json", book)
+    return book
+
+
+def delete_lorebook(bid: str) -> bool:
+    f = LORE_DIR / f"{bid}.json"
+    if f.exists():
+        f.unlink()
+        return True
+    return False
+
+
+# ----- personas ---------------------------------------------------------------
+
+def list_personas() -> list[dict]:
+    return _list(PERSONA_DIR)
+
+
+def get_persona(pid: str) -> Optional[dict]:
+    return _read(PERSONA_DIR / f"{pid}.json")
+
+
+def save_persona(persona: dict) -> dict:
+    _ensure_dirs()
+    if not persona.get("id"):
+        persona["id"] = new_id()
+        persona["created"] = time.time()
+    persona["updated"] = time.time()
+    _write(PERSONA_DIR / f"{persona['id']}.json", persona)
+    return persona
+
+
+def delete_persona(pid: str) -> bool:
+    f = PERSONA_DIR / f"{pid}.json"
     if f.exists():
         f.unlink()
         return True
