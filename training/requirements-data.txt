@@ -9,3 +9,4 @@
 datasets>=4.3
 huggingface_hub>=0.34
 datasketch>=1.6          # scalable MinHash near-dedup (falls back to pure-Python if absent)
+zstandard>=0.22          # LimaRP's mirror ships a .zst file; fsspec needs this to read it
