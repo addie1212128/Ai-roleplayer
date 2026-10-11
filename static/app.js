@@ -219,7 +219,7 @@ async function chatAction(action, userText, charId) {
     tmpAvatar = sp ? avatarHtml(sp) : "👥";
   }
   tmp.innerHTML = `<div class="who">${tmpAvatar}</div><div class="col"><div class="bubble cursor"></div></div>`;
-  if ($("#empty-state")) renderMessages();
+  if ($(".empty-state")) renderMessages();  // clear any empty-state placeholder first
   $("#messages").appendChild(tmp);
   const tmpBubble = tmp.querySelector(".bubble");
   scrollToBottom();
@@ -750,7 +750,10 @@ function init() {
     reader.readAsDataURL(f);
   });
   $("#c-avatar-clear").onclick = async () => {
-    if (state.editingCharId && state.editingCharImage) { try { await api.clearAvatarImg(state.editingCharId); } catch {} }
+    if (state.editingCharId && state.editingCharImage) {
+      try { const r = await api.clearAvatarImg(state.editingCharId); if (!r.ok) throw new Error("server " + r.status); }
+      catch (e) { alert("Couldn't clear the image: " + e.message); return; }
+    }
     state.editingCharImage = null; renderAvatarPreview(); await refreshCharacters();
   };
   $("#char-delete").onclick = async () => {

@@ -271,6 +271,11 @@ def test_rag():
         check("rag: store persisted vectors", bool(store and store.get("chunks")))
         block = asyncio.run(rag.retrieve(story, "tell me about the dragon and castle", "fake", "http://x", k=2))
         check("rag: retrieves relevant moment", "DRAGON" in block, block[:80])
+        # pruning must persist even when nothing new is embedded, or deleted
+        # content would keep being retrieved from the stale sidecar.
+        short = {"id": story["id"], "messages": msgs[:3], "summaries": []}
+        asyncio.run(rag.update_store(short, "fake", "http://x"))
+        check("rag: prune persisted with no new embeds", len(storage.get_vec(story["id"])["chunks"]) == 0)
     finally:
         rag.embed_texts = orig
 
@@ -449,6 +454,9 @@ def test_integration():
                             json={"filename": "s.json", "data_b64": base64.b64encode(exp.content).decode()}).json()
     check("api: story import new id + messages kept",
           imp_story["id"] != story["id"] and len(imp_story["messages"]) == len(exp.json()["messages"]))
+    bad = base64.b64encode(json.dumps({"title": "x", "messages": [{"role": "user", "content": "ok"}, "nope"]}).encode()).decode()
+    check("api: import rejects malformed messages",
+          client.post("/api/stories/import", json={"filename": "b.json", "data_b64": bad}).status_code == 400)
 
     # full backup zip
     bk = client.get("/api/backup")
@@ -483,6 +491,11 @@ def test_integration():
     client.post("/api/chat", json={"story_id": gstory["id"], "action": "group_speak", "char_id": char["id"]})
     check("api: group_speak routes to chosen member",
           client.get(f"/api/stories/{gstory['id']}").json()["messages"][-1].get("char_id") == char["id"])
+    before = client.get(f"/api/stories/{gstory['id']}").json()["messages"][-1]
+    client.post("/api/chat", json={"story_id": gstory["id"], "action": "swipe"})
+    after = client.get(f"/api/stories/{gstory['id']}").json()["messages"][-1]
+    check("api: group swipe keeps attribution + adds alternate",
+          after.get("char_id") == before.get("char_id") and len(after["swipes"]) == len(before["swipes"]) + 1)
 
     # persona
     p = client.post("/api/personas", json={"name": "Sam", "description": "A traveler."}).json()

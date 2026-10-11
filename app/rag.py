@@ -26,6 +26,7 @@ DEFAULT_EMBED_MODEL = "nomic-embed-text"
 KEEP_RAW = 12          # most-recent messages considered "live" (not retrieved)
 CHUNK_WORDS = 400
 CHUNK_OVERLAP = 50
+MAX_EMBED_PER_TURN = 32  # cap backfill per turn so a cold/long story can't stall generation
 
 
 def _key(text: str) -> str:
@@ -106,14 +107,23 @@ async def update_store(story: dict, model: str, ollama_url: str) -> Optional[dic
     store = storage.get_vec(sid) or {"model": model, "chunks": []}
     if store.get("model") != model:
         store = {"model": model, "chunks": []}  # model changed -> rebuild
+    before = len(store["chunks"])
     store["chunks"] = [c for c in store["chunks"] if c["key"] in want]  # prune stale
+    pruned = len(store["chunks"]) != before
     have = {c["key"] for c in store["chunks"]}
-    missing = [(k, t) for k, t in want.items() if k not in have]
+    # Cap how much we embed in one turn: a cold/long story backfills over several
+    # turns instead of one giant call that stalls generation under the story lock.
+    missing = [(k, t) for k, t in want.items() if k not in have][:MAX_EMBED_PER_TURN]
+    added = False
     if missing:
         vecs = await embed_texts(["search_document: " + t for _, t in missing], model, ollama_url)
         for (k, t), v in zip(missing, vecs):
             if v:
                 store["chunks"].append({"key": k, "text": t, "vec": v})
+                added = True
+    # Persist whenever the store changed — pruning alone must be saved, or
+    # deleted/edited content would keep being retrieved from the stale sidecar.
+    if pruned or added:
         storage.save_vec(sid, store)
     return store
 

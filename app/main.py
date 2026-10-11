@@ -438,6 +438,7 @@ async def chat(req: ChatReq):
                 last["swipes"].append(clean)
                 last["swipe_id"] = len(last["swipes"]) - 1
                 last["content"] = clean
+                _attach(last)   # keep attribution matching the card actually used
                 idx = len(msgs) - 1
             else:  # continue
                 last = msgs[-1]
@@ -445,6 +446,7 @@ async def chat(req: ChatReq):
                 last["content"] = last.get("content", "") + sep + clean
                 if last.get("swipes"):
                     last["swipes"][last.get("swipe_id", 0)] = last["content"]
+                _attach(last)
                 idx = len(msgs) - 1
 
             storage.save_story(story)
@@ -620,6 +622,13 @@ async def import_story(req: ImportReq):
         raise HTTPException(400, "Could not read the story file.")
     if not isinstance(obj, dict) or not isinstance(obj.get("messages"), list):
         raise HTTPException(400, "Not a valid story export.")
+    msgs = obj["messages"]
+    if not all(isinstance(m, dict) and m.get("role") in ("user", "assistant", "system") for m in msgs):
+        raise HTTPException(400, "Story file has malformed messages.")
+    for m in msgs:  # normalize assistant turns into swipe shape, like create_story
+        if m.get("role") == "assistant" and "swipes" not in m:
+            m["swipes"] = [m.get("content", "")]
+            m["swipe_id"] = 0
     obj.pop("id", None)  # assign a fresh id so imports never collide
     obj.setdefault("summaries", [])
     obj.setdefault("authors_note", {"text": "", "depth": 4, "role": "system"})
