@@ -13,6 +13,39 @@
   --radius: 12px;
 }
 
+/* Light theme — applied when the user toggles it (data-theme="light"). */
+:root[data-theme="light"] {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --panel-2: #eceef2;
+  --border: #d4d7de;
+  --text: #1a1c22;
+  --muted: #5c6270;
+  --accent: #6b4dff;
+  --accent-2: #4d6bff;
+  --user: #d7e3fb;
+  --ai: #eceef2;
+  --danger: #d23a63;
+}
+
+/* "Auto" (no explicit data-theme) follows the OS: light palette when the OS
+   prefers light; otherwise the base :root (dark) applies. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="light"]) {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --panel-2: #eceef2;
+    --border: #d4d7de;
+    --text: #1a1c22;
+    --muted: #5c6270;
+    --accent: #6b4dff;
+    --accent-2: #4d6bff;
+    --user: #d7e3fb;
+    --ai: #eceef2;
+    --danger: #d23a63;
+  }
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -25,6 +58,19 @@ html, body {
 }
 
 .hidden { display: none !important; }
+
+/* Story search + character auto-generate row */
+.story-search {
+  width: 100%; margin: 0 0 8px; padding: 6px 10px;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; font-size: 13px;
+}
+.gen-row { display: flex; gap: 8px; margin: 0 0 12px; }
+.gen-row input {
+  flex: 1; padding: 8px 10px; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.gen-row button { white-space: nowrap; }
 
 #app { display: grid; grid-template-columns: 300px 1fr; height: 100vh; }
 

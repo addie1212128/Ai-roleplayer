@@ -28,11 +28,15 @@ Tavern character-card import.
   you or breaking character. Optional **text-to-speech** reads replies aloud.
 - 🔄 **Full control of each reply** — **swipe** for alternates, **regenerate**,
   **continue**, **edit** any message, or **delete from** a point.
+- 🪄 **AI assists** — **impersonate** (let the model draft *your* next line when
+  you're stuck), **✨ generate a character** from a one-line concept, a
+  **light/dark theme**, and **story search**.
 - 🧑 **Personas** — tell the AI who *you* are for better, more personal replies.
 - 📥 **Import community characters** — load Tavern / SillyTavern **V2 & V3 cards**
   (`.json` or `.png`), so thousands of existing characters just work. Export too.
-- 💾 **Export & backup** — download any story, re-import it, or grab a one-click
-  zip of *all* your data so a lost machine never loses your saves.
+- 💾 **Export & backup** — download any story (JSON to re-import, or a readable
+  **Markdown transcript** to keep/share), or grab a one-click zip of *all* your
+  data so a lost machine never loses your saves.
 - 🎚️ **Per-model tuned settings** — sensible sampler presets per model, a
   creativity slider, context size, reply length, and an advanced panel.
 - 📊 **Live context meter** — see exactly how much of the model's memory you're
@@ -61,6 +65,11 @@ In a terminal, grab a model. Picks for a **GPU gaming PC**, by VRAM:
 
 > Any chat model works — use whatever you like. Bigger = more coherent, needs
 > more VRAM. The app auto-applies a good sampler preset per model.
+
+> 🧠 **Want your *own* model?** You can fine-tune an open base model into a
+> custom roleplay (and optionally teaching) brain that plugs right back into
+> this app via Ollama. See **[TRAINING.md](TRAINING.md)** for the full,
+> honest build plan — base models, datasets, cost, and the GGUF export steps.
 
 ### 3. Install Python
 If you don't have it: **<https://www.python.org/downloads/>** (3.10+). On

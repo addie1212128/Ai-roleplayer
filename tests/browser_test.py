@@ -56,6 +56,12 @@ def start_fake_ollama(port):
     async def chat(request: Request):
         body = await request.json()
         if not body.get("stream"):
+            sysmsg = (body.get("messages") or [{}])[0].get("content", "")
+            if "design characters" in sysmsg:
+                return JSONResponse({"message": {"content": (
+                    '{"name":"Ember","description":"A fire mage.","personality":"Bold.",'
+                    '"scenario":"A ruined tower.","greeting":"*flames flicker* Hello."}')},
+                    "done": True})
             return JSONResponse({"message": {"content": "- summary."}, "done": True})
 
         async def gen():
@@ -138,6 +144,14 @@ def main():
         page.wait_for_function("document.querySelector('.msg.ai:last-child .swipe-nav .count') && document.querySelector('.msg.ai:last-child .swipe-nav .count').innerText.trim()==='2/2'", timeout=8000)
         check("UI: swipe generated a 2nd version", "2/2" in page.inner_text(".msg.ai:last-child .swipe-nav .count"))
 
+        # impersonate: draft the user's next line into the composer
+        page.fill("#input", "")
+        page.click("#impersonate-btn")
+        page.wait_for_function("document.querySelector('#input').value.includes('traveler.')", timeout=8000)
+        check("UI: impersonate drafts into composer", "traveler." in page.input_value("#input"))
+        page.wait_for_function("!document.querySelector('#input').disabled", timeout=8000)  # draft finished, composer re-enabled
+        page.fill("#input", "")
+
         # open settings drawer
         page.click("#settings-btn")
         page.wait_for_selector("#settings-modal:not(.hidden)", timeout=3000)
@@ -152,6 +166,12 @@ def main():
         check("UI: char editor has example field", page.locator("#c-example").count() == 1)
         check("UI: char editor has profile fields", page.locator("#c-career").count() == 1)
         check("UI: permanent-token badge computed", "tokens" in page.inner_text("#perm-tokens"))
+        # character generator fills the editor fields from a concept
+        page.fill("#c-concept", "a fire mage")
+        page.click("#c-generate")
+        page.wait_for_function("document.querySelector('#c-name').value === 'Ember'", timeout=8000)
+        check("UI: character generator fills fields",
+              page.input_value("#c-name") == "Ember" and page.input_value("#c-greeting") != "")
         page.click("#char-cancel")
         check("UI: mood selector present", page.locator("#mood-select").count() == 1)
         check("UI: inner-thought rendering", page.evaluate("formatContent('((I am afraid.))').includes('thought')"))
@@ -163,6 +183,14 @@ def main():
             before = page.inner_text("#tts-btn")
             page.click("#tts-btn")
             check("UI: TTS toggle changes label", page.inner_text("#tts-btn") != before)
+
+        # theme toggle, story search, and markdown transcript export
+        page.click("#theme-btn")
+        check("UI: theme toggle applies a theme",
+              page.evaluate("document.documentElement.getAttribute('data-theme')") in ("dark", "light"))
+        check("UI: story search present", page.locator("#story-search").count() == 1)
+        check("UI: transcript export button present",
+              page.locator("#story-list [title='Export transcript (.md)']").count() >= 1)
 
         # group scene creation
         page.click("#new-group-btn")
@@ -182,8 +210,15 @@ def main():
     print()
     if FAILED:
         print(f"❌ {len(FAILED)} UI check(s) failed: {FAILED}")
-        sys.exit(1)
+        sys.stdout.flush()
+        os._exit(1)
     print("✅ All UI checks passed.")
+    sys.stdout.flush()
+    # Playwright/Chromium + the daemon uvicorn threads can segfault during Python
+    # interpreter teardown in CI *after* every check has passed (exit 139). The
+    # test result is already decided here, so exit hard with the real status and
+    # skip the flaky native teardown — a teardown crash must not fail a green run.
+    os._exit(0)
 
 
 if __name__ == "__main__":

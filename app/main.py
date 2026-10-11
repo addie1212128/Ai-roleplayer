@@ -159,6 +159,11 @@ class AvatarReq(BaseModel):
     ext: str = "png"
 
 
+class GenCharReq(BaseModel):
+    concept: str = ""
+    model: str = ""
+
+
 _IMG_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
 MAX_AVATAR_BYTES = 8_000_000
 
@@ -179,6 +184,37 @@ def _save_avatar(cid: str, raw: bytes, ext: str) -> str:
 
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
+
+
+def _attachment_ascii(fname: str, fallback: str = "download") -> str:
+    """ASCII + PRINTABLE download name for a Content-Disposition filename=.
+
+    Control chars (CR/LF/NUL) are ASCII, so an unfiltered title would land a
+    newline in the header — a crash under a strict ASGI server and an HTTP
+    header-injection vector under a lax one. The full/original name is still
+    conveyed via the RFC 5987 filename* (percent-encoded), so nothing is lost.
+    """
+    out = "".join(c for c in (fname or "") if c.isascii() and c.isprintable() and c not in '"\\')
+    return out or fallback
+
+
+def _extract_json(text: str) -> Optional[dict]:
+    """Pull the first JSON object out of a model reply (tolerates code fences /
+    surrounding prose)."""
+    if not text:
+        return None
+    t = text.strip()
+    i = t.find("{")
+    if i == -1:
+        return None
+    try:
+        # raw_decode parses the FIRST complete object and ignores any trailing
+        # text (e.g. a note the model appended), which slicing to the last '}'
+        # would wrongly fold in and invalidate.
+        obj, _ = json.JSONDecoder().raw_decode(t[i:])
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
 
 
 def effective_settings(story: dict, override: dict) -> dict:
@@ -305,6 +341,48 @@ async def presets(model: str = ""):
     return {"defaults": DEFAULTS, "model": model, "settings": preset_for(model)}
 
 
+@app.post("/api/generate_character")
+async def generate_character(req: GenCharReq):
+    """Draft a character card from a one-line concept using the local model."""
+    concept = (req.concept or "").strip()
+    if not concept:
+        raise HTTPException(400, "Describe the character you want in a sentence or two.")
+    if len(concept) > 2000:
+        raise HTTPException(400, "Concept is too long.")
+    model = (req.model or "").strip()
+    if not model:
+        raise HTTPException(400, "No model selected. Pick one first.")
+    sys_prompt = (
+        "You design characters for collaborative roleplay. Given a concept, respond with "
+        "ONLY a JSON object (no prose, no markdown fence) with these string fields: "
+        '"name", "description", "personality", "scenario", "greeting". '
+        "The greeting is the character's immersive in-character opening message to the user "
+        "(2-4 sentences, with *actions* in asterisks and \"speech\" in quotes). "
+        "Make description and personality vivid but concise. Output valid JSON only."
+    )
+    payload = {
+        "model": model, "stream": False, "keep_alive": "30m",
+        "messages": [{"role": "system", "content": sys_prompt},
+                     {"role": "user", "content": f"Concept: {concept}"}],
+        "options": {"temperature": 0.9, "num_predict": 900, "num_ctx": 8192},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            r.raise_for_status()
+            out = r.json().get("message", {}).get("content", "")
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach Ollama at {OLLAMA_URL} ({e}).")
+    data = _extract_json(context.strip_think(out))
+    if not data:
+        raise HTTPException(502, "The model didn't return usable character JSON — try again.")
+    fields = {k: str(data.get(k, "") or "").strip()
+              for k in ("name", "description", "personality", "scenario", "greeting")}
+    if not fields["name"]:
+        fields["name"] = concept[:40]
+    return {"ok": True, "character": fields}
+
+
 # --- chat ---------------------------------------------------------------------
 
 @app.post("/api/chat")
@@ -360,21 +438,31 @@ async def chat(req: ChatReq):
                     yield _sse({"error": "Not a group story."})
                     return
                 ctx_msgs = msgs
+            elif action == "impersonate":
+                # Draft {{user}}'s next line in their voice. Read-only: nothing
+                # is ever written to the story (the suggestion only fills the box).
+                ctx_msgs = msgs
             else:
                 yield _sse({"error": f"Unknown action: {action}"})
                 return
 
             # Group scenes: one member speaks per turn. Pick the active speaker
             # and swap in their card; label past turns so speakers are distinct.
+            user_name = (persona or {}).get("name") or settings.get("user_name") or "You"
             members = _member_chars(story) if _is_group(story) else []
-            active = _group_active(story, req, members) if members else None
+            # Impersonation writes the USER's line, so don't select a group speaker
+            # — but still keep the roster + labeled history so the draft fits the
+            # scene and doesn't blur the members together.
+            grp_imp = action == "impersonate" and bool(members)
+            active = _group_active(story, req, members) if (members and action != "impersonate") else None
             if active:
                 character = active
                 lb_id = active.get("lorebook_id") or story.get("lorebook_id")
                 lorebook = storage.get_lorebook(lb_id) if lb_id else None
 
             ctx_story = dict(story)
-            ctx_story["messages"] = context.label_group_history(ctx_msgs) if active else ctx_msgs
+            ctx_story["messages"] = (context.label_group_history(ctx_msgs)
+                                     if (active or grp_imp) else ctx_msgs)
 
             # Optional semantic recall (degrades to "" if the embed model is absent).
             rag_block = ""
@@ -388,7 +476,12 @@ async def chat(req: ChatReq):
                 except Exception:
                     rag_block = ""
 
-            assemble_char = context.build_group_character(active, members) if active else character
+            if active:
+                assemble_char = context.build_group_character(active, members)
+            elif grp_imp:
+                assemble_char = context.build_scene_character(character, members)
+            else:
+                assemble_char = character
             built = context.assemble_prompt(ctx_story, assemble_char, persona, lorebook,
                                             settings, rag_block=rag_block)
             messages = built["messages"]
@@ -396,6 +489,12 @@ async def chat(req: ChatReq):
                 messages.append({"role": "system", "content": (
                     f"[Continue {character.get('name', 'the character')}'s previous reply "
                     f"from exactly where it left off. Do not repeat earlier text.]")})
+            if action == "impersonate":
+                messages.append({"role": "system", "content": (
+                    f"[For this turn only, write {user_name}'s next message, in first person "
+                    f"as {user_name} — 1 to 3 sentences in their established voice. Output ONLY "
+                    f"{user_name}'s own words and actions; do not write for "
+                    f"{character.get('name', 'the character')} or narrate other characters.]")})
 
             payload = {
                 "model": model,
@@ -443,6 +542,13 @@ async def chat(req: ChatReq):
             if not clean.strip():
                 yield _sse({"error": "The model returned an empty reply. Try again, "
                                      "lower the temperature, or pick another model."})
+                return
+
+            # Impersonation is read-only: return the drafted line, persist nothing.
+            if action == "impersonate":
+                yield _sse({"done": True, "impersonate": True, "text": clean,
+                            "prompt_tokens": prompt_tokens, "eval_tokens": eval_tokens,
+                            "num_ctx": settings.get("num_ctx")})
                 return
 
             def _attach(msg):
@@ -613,7 +719,7 @@ async def export_character(cid: str):
     fname = (char.get("name") or "character").replace(" ", "_")
     # HTTP headers are Latin-1; a non-ASCII or emoji name (common on imported
     # cards) would raise. Send an ASCII fallback + an RFC 5987 UTF-8 filename*.
-    ascii_name = "".join(c for c in fname if c.isascii() and c not in '"\\') or "character"
+    ascii_name = _attachment_ascii(fname, "character")
     return JSONResponse(card, headers={
         "Content-Disposition":
             f"attachment; filename=\"{ascii_name}.json\"; filename*=UTF-8''{quote(fname)}.json"})
@@ -640,10 +746,39 @@ async def export_story(sid: str):
     if not story:
         raise HTTPException(404, "Story not found")
     fname = (story.get("title") or "story").replace(" ", "_")
-    ascii_name = "".join(c for c in fname if c.isascii() and c not in '"\\') or "story"
+    ascii_name = _attachment_ascii(fname, "story")
     return JSONResponse(story, headers={
         "Content-Disposition":
             f"attachment; filename=\"{ascii_name}.json\"; filename*=UTF-8''{quote(fname)}.json"})
+
+
+@app.get("/api/stories/{sid}/transcript")
+async def export_transcript(sid: str):
+    """Export a story as a readable Markdown transcript (human-friendly, unlike
+    the JSON export which is for re-import)."""
+    story = storage.get_story(sid)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    char = story.get("character_name") or "Character"
+    out = [f"# {story.get('title', 'Untitled')}", "", f"*Character: {char}*", ""]
+    for m in story.get("messages", []):
+        role = m.get("role")
+        if role == "user":
+            who = "You"
+        elif role == "assistant":
+            who = m.get("name") or char
+        else:
+            continue
+        content = (m.get("content") or "").strip()
+        if content:
+            out.append(f"**{who}:** {content}")
+            out.append("")
+    md = "\n".join(out)
+    fname = (story.get("title") or "story").replace(" ", "_")
+    ascii_name = _attachment_ascii(fname, "story")
+    return Response(content=md, media_type="text/markdown", headers={
+        "Content-Disposition":
+            f"attachment; filename=\"{ascii_name}.md\"; filename*=UTF-8''{quote(fname)}.md"})
 
 
 @app.post("/api/stories/import")

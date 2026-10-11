@@ -321,6 +321,18 @@ def build_group_character(active: dict, members: list[dict]) -> dict:
     return g
 
 
+def build_scene_character(base: dict, members: list[dict]) -> dict:
+    """Roster-aware scene framing for impersonating the user in a group: it lists
+    who is present but does NOT restrict output to one speaker (the user's line
+    is produced by the impersonation instruction instead)."""
+    names = [m.get("name", "?") for m in members]
+    roster = (f"\n\n[GROUP SCENE] Characters present: {', '.join(names)}. "
+              f"They are separate people in the scene.")
+    g = dict(base)
+    g["system_prompt"] = (base.get("system_prompt") or "{{original}}") + roster
+    return g
+
+
 def label_group_history(messages: list[dict]) -> list[dict]:
     """Prefix each character's past message with their name so the model can
     tell the speakers apart in a group scene."""

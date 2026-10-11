@@ -20,6 +20,19 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python tests/selftest.py
 
+  training:
+    name: Training toolkit (compile + pure-logic tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # No GPU/ML deps needed: scripts import unsloth/datasets lazily, and the
+      # tests cover only stdlib logic (data conversion, dedup, prompt building).
+      - run: python -m py_compile training/*.py training/tests/*.py
+      - run: python training/tests/test_training_tools.py
+
   ui:
     name: Headless browser test
     runs-on: ubuntu-latest
