@@ -144,6 +144,28 @@ def main():
         page.wait_for_function("document.querySelector('.msg.ai:last-child .swipe-nav .count') && document.querySelector('.msg.ai:last-child .swipe-nav .count').innerText.trim()==='2/2'", timeout=8000)
         check("UI: swipe generated a 2nd version", "2/2" in page.inner_text(".msg.ai:last-child .swipe-nav .count"))
 
+        # keyboard shortcut: ArrowLeft/Right step through versions of the last reply
+        page.click("#active-name")  # move focus off any control, not into an input
+        page.keyboard.press("ArrowLeft")
+        page.wait_for_function("document.querySelector('.msg.ai:last-child .swipe-nav .count') && document.querySelector('.msg.ai:last-child .swipe-nav .count').innerText.trim()==='1/2'", timeout=4000)
+        check("UI: ArrowLeft steps to previous version", "1/2" in page.inner_text(".msg.ai:last-child .swipe-nav .count"))
+        page.keyboard.press("ArrowRight")
+        page.wait_for_function("document.querySelector('.msg.ai:last-child .swipe-nav .count') && document.querySelector('.msg.ai:last-child .swipe-nav .count').innerText.trim()==='2/2'", timeout=4000)
+        check("UI: ArrowRight steps to next version", "2/2" in page.inner_text(".msg.ai:last-child .swipe-nav .count"))
+
+        # copy button, guided-regenerate note box, and the shortcuts toast
+        check("UI: copy button on messages", page.locator(".msg .msg-controls button[title='Copy text']").count() >= 1)
+        gbtn = page.locator(".msg.ai").last.locator("button[title^='Guided regenerate']")
+        check("UI: guided-regenerate button on last reply", gbtn.count() == 1)
+        gbtn.click()
+        page.wait_for_selector(".guide-row", timeout=3000)
+        check("UI: guide note box opens", page.locator(".guide-row .guide-input").count() == 1)
+        page.keyboard.press("Escape")
+        check("UI: Escape closes the guide box", page.locator(".guide-row").count() == 0)
+        page.click("#shortcuts-btn")
+        page.wait_for_function("!document.querySelector('#toast').classList.contains('hidden')", timeout=3000)
+        check("UI: shortcuts toast shows", "Shortcuts" in page.inner_text("#toast"))
+
         # impersonate: draft the user's next line into the composer
         page.fill("#input", "")
         page.click("#impersonate-btn")
@@ -158,7 +180,11 @@ def main():
         check("UI: settings drawer opens", page.locator("#s-ctx").count() == 1)
         check("UI: settings num_ctx populated", int(page.input_value("#s-ctx")) >= 4096)
         check("UI: inner-monologue + scene controls", page.locator("#s-inner").count() == 1 and page.locator("#s-scene").count() == 1)
-        page.click("#settings-cancel")
+        check("UI: banned-phrases field present", page.locator("#s-ban").count() == 1)
+        # Escape closes the top modal (keyboard-shortcut handler)
+        page.keyboard.press("Escape")
+        page.wait_for_function("document.querySelector('#settings-modal').classList.contains('hidden')", timeout=3000)
+        check("UI: Escape closes a modal", page.locator("#settings-modal.hidden").count() == 1)
 
         # character editor opens with advanced fields
         page.click("#edit-active-char")

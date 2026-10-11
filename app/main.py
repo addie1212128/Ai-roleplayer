@@ -121,6 +121,7 @@ class ChatReq(BaseModel):
     action: str = "send"           # send | regenerate | swipe | continue | group_speak
     user_message: Optional[str] = None
     char_id: Optional[str] = None  # group_speak: which member should reply
+    note: Optional[str] = None     # one-off steering for THIS turn (not persisted)
     settings: dict = {}
 
 
@@ -495,6 +496,13 @@ async def chat(req: ChatReq):
                     f"as {user_name} — 1 to 3 sentences in their established voice. Output ONLY "
                     f"{user_name}'s own words and actions; do not write for "
                     f"{character.get('name', 'the character')} or narrate other characters.]")})
+            # One-off steering for this turn only (guided regenerate / swipe). Goes
+            # last so it's the strongest instruction, and is never persisted.
+            note = (req.note or "").strip()[:2000]
+            if note:
+                messages.append({"role": "system", "content": (
+                    f"[Director's note — apply this to the reply you are about to write; "
+                    f"do not mention or quote this note: {note}]")})
 
             payload = {
                 "model": model,

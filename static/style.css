@@ -190,6 +190,11 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .swipe-nav { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); }
 .swipe-nav .count { font-size: 12px; min-width: 30px; text-align: center; }
 
+/* Guided-regenerate inline note box (appears under a reply) */
+.guide-row { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+.guide-row .guide-input { flex: 1; font-size: 13px; padding: 6px 10px; }
+.guide-row button { padding: 6px 12px; font-size: 13px; }
+
 .empty-state { margin: auto; text-align: center; color: var(--muted); max-width: 400px; }
 .empty-state .big { font-size: 56px; }
 .empty-state h2 { color: var(--text); margin: 8px 0; }

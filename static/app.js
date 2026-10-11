@@ -147,12 +147,66 @@ function buildControls(m, i, isLast, bubble) {
     nav.append(left, count, right);
     ctl.appendChild(nav);
     ctl.appendChild(btn("↻", "Regenerate", () => chatAction("regenerate")));
+    ctl.appendChild(btn("🎬", "Guided regenerate — redo this reply with a note", () => startGuide(i, bubble)));
     ctl.appendChild(btn("↳", "Continue", () => chatAction("continue")));
   }
   if (isAssistant && "speechSynthesis" in window) ctl.appendChild(btn("🔊", "Read aloud", () => speak(m.content)));
+  ctl.appendChild(btn("📋", "Copy text", () => copyMessage(m)));
   ctl.appendChild(btn("✎", "Edit", () => startEdit(i, bubble)));
   ctl.appendChild(btn("🗑", "Delete from here", () => deleteFrom(i)));
   return ctl;
+}
+
+// Copy a message's current text to the clipboard (with an execCommand fallback
+// for non-secure contexts / headless browsers where navigator.clipboard throws).
+async function copyMessage(m) {
+  const text = (m && m.content) || "";
+  if (!text) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error("no clipboard api");
+    }
+    showToast("📋 Copied");
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      showToast(ok ? "📋 Copied" : "⚠️ Couldn't copy");
+    } catch { showToast("⚠️ Couldn't copy"); }
+  }
+}
+
+// Guided regenerate: a small inline note box under the message. The note steers
+// only this one regeneration (server-side, never persisted).
+function startGuide(i, bubble) {
+  if (state.streaming) return;
+  const col = bubble.closest(".col");
+  if (!col || col.querySelector(".guide-row")) return;   // already open
+  const row = document.createElement("div");
+  row.className = "guide-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "guide-input";
+  input.placeholder = "How should this reply change? (e.g. shorter, angrier, add a twist)…";
+  const go = document.createElement("button");
+  go.className = "primary"; go.textContent = "Regenerate";
+  const cancel = document.createElement("button");
+  cancel.className = "ghost"; cancel.textContent = "Cancel";
+  row.append(input, go, cancel);
+  col.appendChild(row);
+  input.focus();
+  const run = () => { const note = input.value.trim(); row.remove(); chatAction("regenerate", null, null, note || null); };
+  cancel.onclick = () => row.remove();
+  go.onclick = run;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); run(); }
+    else if (e.key === "Escape") { e.preventDefault(); row.remove(); }
+  });
 }
 
 function scrollToBottom() { const m = $("#messages"); m.scrollTop = m.scrollHeight; }
@@ -214,7 +268,7 @@ function startEdit(i, bubble) {
 }
 
 // ---------- chat ----------
-async function chatAction(action, userText, charId) {
+async function chatAction(action, userText, charId, note) {
   if (!state.story || state.streaming) return;
   if (!state.story.model) {
     await api.storyMeta(state.story.id, { model: state.model });
@@ -252,7 +306,7 @@ async function chatAction(action, userText, charId) {
   try {
     const resp = await fetch("/api/chat", {
       method: "POST", headers: authH({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ story_id: state.story.id, action, user_message: userText || null, char_id: charId || null, settings: {} }),
+      body: JSON.stringify({ story_id: state.story.id, action, user_message: userText || null, char_id: charId || null, note: note || null, settings: {} }),
       signal: state.abort.signal,
     });
     const reader = resp.body.getReader();
@@ -384,6 +438,50 @@ function cycleTheme() {
   const next = order[(order.indexOf(_theme()) + 1) % order.length];
   try { localStorage.setItem("rp-theme", next); } catch (e) {}
   applyTheme(next);
+}
+
+// ---------- keyboard shortcuts ----------
+function _openModals() { return [...document.querySelectorAll(".modal:not(.hidden)")]; }
+function _isTyping(el) {
+  return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+}
+function _lastIdx() { const m = state.story && state.story.messages; return m && m.length ? m.length - 1 : -1; }
+function _lastIsAssistant() { const i = _lastIdx(); return i >= 0 && state.story.messages[i].role === "assistant"; }
+
+const SHORTCUTS = [
+  ["Enter", "Send message"],
+  ["Shift+Enter", "New line"],
+  ["← / →", "Previous / next version of the last reply"],
+  ["R", "Regenerate last reply"],
+  ["G", "Guided regenerate (give a note)"],
+  ["C", "Focus the composer"],
+  ["Esc", "Close dialog / cancel"],
+  ["?", "Show this list"],
+];
+function showShortcuts() { showToast("⌨️ Shortcuts — " + SHORTCUTS.map(([k, d]) => `${k}: ${d}`).join("  ·  ")); }
+
+function bindShortcuts() {
+  document.addEventListener("keydown", (e) => {
+    // Escape always works: cancel an open guide box, else close the top modal.
+    if (e.key === "Escape") {
+      const guide = document.querySelector(".guide-row");
+      if (guide) { guide.remove(); return; }
+      const modals = _openModals();
+      if (modals.length) { modals[modals.length - 1].classList.add("hidden"); return; }
+      return;
+    }
+    // Everything below is a single-key shortcut: ignore it while typing, while a
+    // modal is open, or with a modifier held (so it never eats real input).
+    if (_isTyping(e.target) || _openModals().length || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "?") { e.preventDefault(); showShortcuts(); return; }
+    if (!state.story || state.streaming) return;
+    const i = _lastIdx();
+    if (e.key === "c") { e.preventDefault(); const inp = $("#input"); if (inp) inp.focus(); return; }
+    if (e.key === "r") { if (_lastIsAssistant()) { e.preventDefault(); chatAction("regenerate"); } return; }
+    if (e.key === "g") { if (_lastIsAssistant()) { e.preventDefault(); const b = $("#messages .msg.ai:last-child .bubble"); if (b) startGuide(i, b); } return; }
+    if (e.key === "ArrowLeft") { if (_lastIsAssistant()) { e.preventDefault(); swipe(i, -1); } return; }
+    if (e.key === "ArrowRight") { if (_lastIsAssistant()) { e.preventDefault(); swipe(i, 1); } return; }
+  });
 }
 
 function showToast(msg) {
@@ -749,6 +847,7 @@ async function openSettings() {
   $("#s-embed").value = s.embed_model || "nomic-embed-text";
   $("#s-inner").checked = !!s.inner_monologue;
   $("#s-scene").value = state.story.scene || "";
+  $("#s-ban").value = s.ban_phrases || "";
   $("#settings-modal").classList.remove("hidden");
 }
 async function saveSettings() {
@@ -758,7 +857,7 @@ async function saveSettings() {
     top_p: parseFloat($("#s-topp").value), top_k: parseInt($("#s-topk").value),
     repeat_penalty: parseFloat($("#s-reppen").value), repeat_last_n: parseInt($("#s-repn").value),
     rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
-    inner_monologue: $("#s-inner").checked,
+    inner_monologue: $("#s-inner").checked, ban_phrases: $("#s-ban").value,
   };
   const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value };
   state.story = await api.storyMeta(state.story.id, patch);
@@ -842,6 +941,7 @@ function init() {
   $("#backup-btn").onclick = () => window.open("/api/backup" + tokenQ(), "_blank");
   $("#story-search").addEventListener("input", (e) => { state.storyQuery = e.target.value; renderStories(); });
   $("#theme-btn").addEventListener("click", cycleTheme);
+  $("#shortcuts-btn").addEventListener("click", showShortcuts);
   applyTheme(_theme());
   $("#impersonate-btn").addEventListener("click", impersonate);
   $("#c-generate").addEventListener("click", generateCharacter);
@@ -962,6 +1062,8 @@ function init() {
     chatAction("send", text);
   });
   $("#stop-btn").onclick = () => { if (state.abort) state.abort.abort(); };
+
+  bindShortcuts();
 
   // initial load
   (async () => {

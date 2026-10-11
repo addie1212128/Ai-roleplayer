@@ -82,6 +82,7 @@
         <div class="header-actions">
           <span id="ctx-meter" class="ctx-meter hidden" title="Prompt tokens used of context window">ctx —</span>
           <button id="theme-btn" class="ghost" title="Theme: system / dark / light">🌗 Auto</button>
+          <button id="shortcuts-btn" class="ghost" title="Keyboard shortcuts">⌨️</button>
           <button id="tts-btn" class="ghost" title="Read replies aloud">🔈 Off</button>
           <button id="settings-btn" class="ghost hidden" title="Story settings">⚙ Settings</button>
           <button id="edit-active-char" class="ghost hidden">Edit character</button>
@@ -252,6 +253,7 @@
       <p class="hint">RAG surfaces relevant older moments via embeddings. Pull the model first: <code>ollama pull nomic-embed-text</code>. Leave off if unsure.</p>
       <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-inner" type="checkbox" style="width:auto" /> Inner monologue — characters show private ((thoughts))</label>
       <label class="field"><span>Scene <em>(where / when / who's present — set once for this story)</em></span><textarea id="s-scene" rows="2"></textarea></label>
+      <label class="field"><span>Banned words &amp; phrases <em>(one per line — the AI rewrites around these; great for killing clichés)</em></span><textarea id="s-ban" rows="3" placeholder="shiver down the spine&#10;barely above a whisper&#10;eyes sparkling with mischief"></textarea></label>
       <details>
         <summary>Advanced samplers</summary>
         <div class="row">

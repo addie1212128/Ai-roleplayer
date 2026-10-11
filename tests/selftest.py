@@ -86,6 +86,29 @@ def test_paper_features():
     check("paper: no profile labels when empty", "Career:" not in plain["messages"][0]["content"])
 
 
+def test_ban_phrases():
+    # parser: newline-split, case-insensitive dedupe, blanks dropped, and a
+    # phrase may contain commas (so the classic "not X, but Y" survives intact).
+    bans = context.parse_ban_phrases("shiver down the spine\n\nNOT X, but Y\nshiver down the spine\n")
+    check("ban: parse dedupes + keeps comma phrases",
+          bans == ["shiver down the spine", "NOT X, but Y"], str(bans))
+    check("ban: empty/None -> []", context.parse_ban_phrases("") == [] and context.parse_ban_phrases(None) == [])
+    check("ban: count is bounded", len(context.parse_ban_phrases("\n".join(f"p{i}" for i in range(200)))) == 60)
+    # injection reaches the assembled prompt with the phrases quoted
+    story = {"messages": [{"role": "user", "content": "hi"}]}
+    built = context.assemble_prompt(story, {"name": "Q", "description": "d"}, None, None,
+                                    {"num_ctx": 8192, "ban_phrases": "barely above a whisper\neyes sparkling"})
+    contents = [m["content"] for m in built["messages"]]
+    joined = "\n".join(contents)
+    check("ban: injected into prompt", "Banned words and phrases" in joined and "barely above a whisper" in joined)
+    # the final in-character reminder must stay last (ban line goes before it)
+    ban_idx = max(i for i, c in enumerate(contents) if "Banned words" in c)
+    rem_idx = max(i for i, c in enumerate(contents) if "Stay in character" in c)
+    check("ban: reminder stays after the ban line", rem_idx > ban_idx, f"ban={ban_idx} rem={rem_idx}")
+    plain = context.assemble_prompt(story, {"name": "Q", "description": "d"}, None, None, {"num_ctx": 8192})
+    check("ban: absent when unset", not any("Banned words" in m["content"] for m in plain["messages"]))
+
+
 def test_storage_id_safety():
     saved = storage.save_persona({"id": "../../evil", "name": "n"})
     check("storage: unsafe id regenerated on save", storage._safe_id(saved["id"]))
@@ -570,6 +593,24 @@ def test_integration():
     after = len(client.get(f"/api/stories/{istory['id']}").json()["messages"])
     check("api: impersonate persists nothing", after == before, f"{before}->{after}")
 
+    # guided regenerate: a one-off director's note steers THIS turn — it reaches
+    # the model as a final system line but is never written to the story.
+    client.post("/api/chat", json={"story_id": istory["id"], "action": "regenerate",
+                                   "note": "make it colder and shorter"})
+    note_sys = "\n".join(m.get("content", "") for m in _last_payload.get("messages", []) if m["role"] == "system")
+    check("api: director's note reaches the model",
+          "Director's note" in note_sys and "colder and shorter" in note_sys, note_sys[-160:])
+    saved = client.get(f"/api/stories/{istory['id']}").json()
+    check("api: director's note not persisted",
+          not any("Director's note" in (m.get("content") or "") for m in saved["messages"]))
+
+    # anti-slop ban list flows story.settings -> effective_settings -> prompt
+    client.put(f"/api/stories/{istory['id']}/meta", json={"settings": {"ban_phrases": "mischievous glint"}})
+    client.post("/api/chat", json={"story_id": istory["id"], "action": "regenerate"})
+    ban_sys = "\n".join(m.get("content", "") for m in _last_payload.get("messages", []) if m["role"] == "system")
+    check("api: ban_phrases flow via story settings",
+          "Banned words and phrases" in ban_sys and "mischievous glint" in ban_sys, ban_sys[-160:])
+
     # character generator: a concept -> drafted card fields
     gj = client.post("/api/generate_character",
                      json={"concept": "a fire mage", "model": "mistral-nemo:12b"}).json()
@@ -601,7 +642,8 @@ def main():
     for fn in [test_samplers, test_strip_think, test_substitute, test_examples,
                test_lorebook, test_assemble_order_and_budget, test_splice_depth,
                test_macro_resolution, test_depth_zero_and_est, test_cards_hardening,
-               test_cards, test_rag, test_paper_features, test_storage_atomic, test_storage_id_safety, test_integration]:
+               test_cards, test_rag, test_paper_features, test_ban_phrases,
+               test_storage_atomic, test_storage_id_safety, test_integration]:
         try:
             fn()
         except Exception as e:
