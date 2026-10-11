@@ -14,18 +14,25 @@ Tavern character-card import.
 
 - 🎭 **Characters** — name, personality, scenario, greeting, plus advanced
   fields (example dialogue, system-prompt override, post-history instructions,
-  narrative voice). Ships with three examples; create or import your own.
+  narrative voice, alternate greetings). Ships with three examples; create or
+  import your own. Give them **avatar images** (or emoji).
+- 👥 **Group scenes** — put two or more characters in one story. A character
+  replies automatically on your turn (mention a name to direct it), or tap a
+  character to make them speak. Each reply is labelled with who's talking.
 - 🧠 **Real memory** — a keyword **lorebook** (world facts that surface only when
-  relevant), **rolling summarization** of older events, and a floating
-  **author's note** keep long stories coherent instead of goldfish-ing.
+  relevant), **rolling summarization** of older events, a floating **author's
+  note**, and optional **semantic recall (RAG)** via local embeddings keep long
+  stories coherent instead of goldfish-ing.
 - 💬 **Immersive streaming** — in-character replies that type out live, actions
   in *italics*, with a scope-controlled prompt that stops the model speaking for
-  you or breaking character.
+  you or breaking character. Optional **text-to-speech** reads replies aloud.
 - 🔄 **Full control of each reply** — **swipe** for alternates, **regenerate**,
   **continue**, **edit** any message, or **delete from** a point.
 - 🧑 **Personas** — tell the AI who *you* are for better, more personal replies.
 - 📥 **Import community characters** — load Tavern / SillyTavern **V2 & V3 cards**
   (`.json` or `.png`), so thousands of existing characters just work. Export too.
+- 💾 **Export & backup** — download any story, re-import it, or grab a one-click
+  zip of *all* your data so a lost machine never loses your saves.
 - 🎚️ **Per-model tuned settings** — sensible sampler presets per model, a
   creativity slider, context size, reply length, and an advanced panel.
 - 📊 **Live context meter** — see exactly how much of the model's memory you're
@@ -93,6 +100,11 @@ Your browser opens at **<http://localhost:8000>**. Pick a character and play.
 - **Add example dialogue** (advanced character field) to lock in a voice.
 - **Use a lorebook** for world facts: they only enter the prompt when a keyword
   appears, so the bot "knows" a huge world without wasting memory every turn.
+- **Group scenes** (👥 in the sidebar) shine with 2–3 characters; mention a name
+  to pick who answers, or tap a character to make them speak.
+- **Long-term memory (RAG)** is optional — pull an embedding model first
+  (`ollama pull nomic-embed-text`), then enable it in a story's Settings. It
+  helps most in very long stories; leave it off if you're unsure.
 
 ---
 

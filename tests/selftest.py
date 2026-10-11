@@ -467,6 +467,23 @@ def test_integration():
     check("api: RAG injects a relevant earlier moment",
           "Relevant earlier moments" in sent and "DRAGON" in sent, sent[:120])
 
+    # group scene: attribution + roster + routing
+    bob = client.post("/api/characters", json={"name": "Bob", "description": "A bard.", "greeting": "Hi, I'm Bob."}).json()
+    gstory = client.post("/api/stories", json={
+        "title": "Group", "member_ids": [char["id"], bob["id"]], "character_name": "Group",
+        "model": "mistral-nemo:12b",
+        "messages": [{"role": "assistant", "content": "Hi, I'm Bob.", "char_id": bob["id"], "name": "Bob", "swipes": ["Hi, I'm Bob."], "swipe_id": 0}],
+    }).json()
+    check("api: group story keeps members", gstory.get("member_ids") == [char["id"], bob["id"]])
+    client.post("/api/chat", json={"story_id": gstory["id"], "action": "send", "user_message": "Hey Bob, what's your tale?"})
+    last = client.get(f"/api/stories/{gstory['id']}").json()["messages"][-1]
+    check("api: group mention routes to named member", last.get("char_id") == bob["id"] and last.get("name") == "Bob", str(last.get("name")))
+    sysmsg = next((m["content"] for m in _last_payload.get("messages", []) if m["role"] == "system"), "")
+    check("api: group roster in system prompt", "[GROUP SCENE]" in sysmsg and "Bob" in sysmsg)
+    client.post("/api/chat", json={"story_id": gstory["id"], "action": "group_speak", "char_id": char["id"]})
+    check("api: group_speak routes to chosen member",
+          client.get(f"/api/stories/{gstory['id']}").json()["messages"][-1].get("char_id") == char["id"])
+
     # persona
     p = client.post("/api/personas", json={"name": "Sam", "description": "A traveler."}).json()
     check("api: persona created", p["id"] and p["name"] == "Sam")

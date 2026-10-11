@@ -32,6 +32,7 @@
       <div class="section-label">
         Characters
         <span>
+          <button id="new-group-btn" class="mini" title="Start a group scene">👥</button>
           <button id="import-char-btn" class="mini" title="Import Tavern card (.json/.png)">⬇</button>
           <button id="new-char-btn" class="mini" title="Create character">+</button>
         </span>
@@ -83,6 +84,8 @@
           adventure. Your stories save automatically as you play.</p>
         </div>
       </div>
+
+      <div id="group-bar" class="group-bar hidden"></div>
 
       <div id="an-bar" class="an-bar hidden">
         <input id="an-input" type="text" placeholder="Author's note — a private nudge sent near the end of the prompt (tone, pacing, what should happen next)…" />
@@ -239,6 +242,20 @@
         <span class="spacer"></span>
         <button id="persona-cancel" class="ghost">Cancel</button>
         <button id="persona-save" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Group creator -->
+  <div id="group-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>New group scene</h3>
+      <p class="hint">Pick two or more characters to share a scene. On your turn a character replies automatically (mention a name to direct it) — or tap a character below the chat to make them speak.</p>
+      <div id="group-pick" class="group-pick"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="group-cancel" class="ghost">Cancel</button>
+        <button id="group-create" class="primary">Start scene</button>
       </div>
     </div>
   </div>

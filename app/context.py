@@ -276,6 +276,34 @@ def scan_lorebook(lorebook: Optional[dict], recent_msgs: list[dict], budget_toke
 # summaries
 # ---------------------------------------------------------------------------
 
+def build_group_character(active: dict, members: list[dict]) -> dict:
+    """Return the active character augmented with a group-scene instruction so
+    it only ever speaks for itself."""
+    names = [m.get("name", "?") for m in members]
+    others = [n for n in names if n != active.get("name")]
+    roster = (
+        f"\n\n[GROUP SCENE] Characters present: {', '.join(names)}. "
+        f"You are {active.get('name')}. Write ONLY {active.get('name')}'s dialogue and actions; "
+        f"never speak or act for {', '.join(others) or 'the others'} or {{{{user}}}}. "
+        f"Do not prefix your reply with a name."
+    )
+    g = dict(active)
+    g["system_prompt"] = (active.get("system_prompt") or "{{original}}") + roster
+    return g
+
+
+def label_group_history(messages: list[dict]) -> list[dict]:
+    """Prefix each character's past message with their name so the model can
+    tell the speakers apart in a group scene."""
+    out = []
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("name"):
+            out.append({**m, "content": f"{m['name']}: {m.get('content', '')}"})
+        else:
+            out.append(m)
+    return out
+
+
 def summaries_block(summaries: list[dict]) -> str:
     if not summaries:
         return ""

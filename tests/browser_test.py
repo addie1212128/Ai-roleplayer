@@ -160,6 +160,17 @@ def main():
             page.click("#tts-btn")
             check("UI: TTS toggle changes label", page.inner_text("#tts-btn") != before)
 
+        # group scene creation
+        page.click("#new-group-btn")
+        page.wait_for_selector("#group-modal:not(.hidden)", timeout=3000)
+        boxes = page.locator("#group-pick input[type=checkbox]")
+        check("UI: group picker lists characters", boxes.count() >= 2, str(boxes.count()))
+        boxes.nth(0).check(); boxes.nth(1).check()
+        page.click("#group-create")
+        page.wait_for_selector("#group-bar:not(.hidden)", timeout=3000)
+        check("UI: group bar shows member chips", page.locator("#group-bar .group-chip").count() >= 2)
+        check("UI: group speaker labels render", page.locator(".msg .speaker").count() >= 1)
+
         page.screenshot(path=str(TMP / "ui.png"), full_page=True)
         browser.close()
 

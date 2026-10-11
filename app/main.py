@@ -15,6 +15,7 @@ import base64
 import io
 import json
 import os
+import re
 import zipfile
 from pathlib import Path
 from typing import List, Optional
@@ -93,8 +94,9 @@ class StoryMeta(BaseModel):
 class ChatReq(BaseModel):
     model_config = ConfigDict(extra="allow")
     story_id: str
-    action: str = "send"           # send | regenerate | swipe | continue
+    action: str = "send"           # send | regenerate | swipe | continue | group_speak
     user_message: Optional[str] = None
+    char_id: Optional[str] = None  # group_speak: which member should reply
     settings: dict = {}
 
 
@@ -165,6 +167,44 @@ def effective_settings(story: dict, override: dict) -> dict:
     return s
 
 
+def _is_group(story: dict) -> bool:
+    return bool(story.get("member_ids"))
+
+
+def _member_chars(story: dict) -> list:
+    out = []
+    for cid in story.get("member_ids", []):
+        c = storage.get_character(cid)
+        if c:
+            out.append(c)
+    return out
+
+
+def _group_active(story: dict, req: "ChatReq", members: list):
+    """Pick which group member speaks for this turn."""
+    if not members:
+        return None
+    by_id = {c["id"]: c for c in members}
+    ids = [c["id"] for c in members]
+    if req.action == "group_speak":
+        return by_id.get(req.char_id) or members[0]
+    if req.action in ("regenerate", "swipe", "continue"):
+        for m in reversed(story.get("messages", [])):
+            if m.get("role") == "assistant":
+                return by_id.get(m.get("char_id")) or members[0]
+        return members[0]
+    # send: a named member replies; otherwise round-robin after the last speaker.
+    text = (req.user_message or "").lower()
+    for c in members:
+        if re.search(r"\b" + re.escape((c.get("name") or "").lower()) + r"\b", text):
+            return c
+    last = next((m.get("char_id") for m in reversed(story.get("messages", []))
+                 if m.get("role") == "assistant"), None)
+    if last in ids:
+        return members[(ids.index(last) + 1) % len(members)]
+    return members[0]
+
+
 def _resolve_actors(story: dict):
     character = storage.get_character(story.get("character_id")) or {
         "name": story.get("character_name") or "Narrator"}
@@ -207,7 +247,7 @@ async def _maybe_summarize(story: dict, model: str) -> bool:
         return False
     lines = []
     for m in block:
-        who = "User" if m.get("role") == "user" else (story.get("character_name") or "Character")
+        who = "User" if m.get("role") == "user" else (m.get("name") or story.get("character_name") or "Character")
         lines.append(f"{who}: {m.get('content', '')}")
     summary = await _summarize_block("\n".join(lines), model)
     if summary:
@@ -288,12 +328,26 @@ async def chat(req: ChatReq):
                     yield _sse({"error": "Nothing to continue yet."})
                     return
                 ctx_msgs = msgs
+            elif action == "group_speak":
+                if not _is_group(story):
+                    yield _sse({"error": "Not a group story."})
+                    return
+                ctx_msgs = msgs
             else:
                 yield _sse({"error": f"Unknown action: {action}"})
                 return
 
+            # Group scenes: one member speaks per turn. Pick the active speaker
+            # and swap in their card; label past turns so speakers are distinct.
+            members = _member_chars(story) if _is_group(story) else []
+            active = _group_active(story, req, members) if members else None
+            if active:
+                character = active
+                lb_id = active.get("lorebook_id") or story.get("lorebook_id")
+                lorebook = storage.get_lorebook(lb_id) if lb_id else None
+
             ctx_story = dict(story)
-            ctx_story["messages"] = ctx_msgs
+            ctx_story["messages"] = context.label_group_history(ctx_msgs) if active else ctx_msgs
 
             # Optional semantic recall (degrades to "" if the embed model is absent).
             rag_block = ""
@@ -307,7 +361,8 @@ async def chat(req: ChatReq):
                 except Exception:
                     rag_block = ""
 
-            built = context.assemble_prompt(ctx_story, character, persona, lorebook,
+            assemble_char = context.build_group_character(active, members) if active else character
+            built = context.assemble_prompt(ctx_story, assemble_char, persona, lorebook,
                                             settings, rag_block=rag_block)
             messages = built["messages"]
             if action == "continue":
@@ -353,21 +408,29 @@ async def chat(req: ChatReq):
                 return
 
             clean = context.strip_think(full)
+            if active and clean.startswith(active["name"] + ":"):
+                clean = clean[len(active["name"]) + 1:].lstrip()  # model echoed the name
             if not clean.strip():
                 yield _sse({"error": "The model returned an empty reply. Try again, "
                                      "lower the temperature, or pick another model."})
                 return
 
+            def _attach(msg):
+                if active:
+                    msg["char_id"] = active["id"]
+                    msg["name"] = active["name"]
+                return msg
+
             # Commit the result to the right place (first write to disk).
-            if action == "send":
-                msgs.append({"role": "assistant", "content": clean,
-                             "swipes": [clean], "swipe_id": 0})
+            if action in ("send", "group_speak"):
+                msgs.append(_attach({"role": "assistant", "content": clean,
+                                     "swipes": [clean], "swipe_id": 0}))
                 idx = len(msgs) - 1
             elif action == "regenerate":
                 if msgs and msgs[-1].get("role") == "assistant":
                     msgs.pop()               # drop old reply only now that we have a new one
-                msgs.append({"role": "assistant", "content": clean,
-                             "swipes": [clean], "swipe_id": 0})
+                msgs.append(_attach({"role": "assistant", "content": clean,
+                                     "swipes": [clean], "swipe_id": 0}))
                 idx = len(msgs) - 1
             elif action == "swipe":
                 last = msgs[-1]
@@ -386,7 +449,7 @@ async def chat(req: ChatReq):
 
             storage.save_story(story)
             summarized = False
-            if action in ("send", "regenerate"):
+            if action in ("send", "regenerate", "group_speak"):
                 summarized = await _maybe_summarize(story, model)
 
             yield _sse({

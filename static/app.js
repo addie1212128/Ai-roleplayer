@@ -62,6 +62,9 @@ function stripThink(s) {
 }
 function estTokens(s) { return Math.ceil((s || "").length / 4); }
 function currentCharacter() { return state.story ? state.characters.find((c) => c.id === state.story.character_id) : null; }
+function isGroupStory() { return !!(state.story && state.story.member_ids && state.story.member_ids.length); }
+function msgCharacter(m) { return (m && m.char_id) ? state.characters.find((c) => c.id === m.char_id) : null; }
+function groupMembers() { return isGroupStory() ? state.story.member_ids.map((id) => state.characters.find((c) => c.id === id)).filter(Boolean) : []; }
 function avatarHtml(entity, fallback = "🎭") {
   if (entity && entity.avatar_image) return `<img class="av" src="${escapeHtml(entity.avatar_image)}" alt="" />`;
   return escapeHtml((entity && entity.avatar) || fallback);
@@ -91,9 +94,14 @@ function buildBubble(m, i, char, isLast) {
   wrap.className = `msg ${m.role === "user" ? "user" : "ai"}`;
   const who = document.createElement("div");
   who.className = "who";
-  who.innerHTML = m.role === "user" ? "🧑" : avatarHtml(char);
+  const speakerChar = (m.role === "assistant" && isGroupStory()) ? msgCharacter(m) : null;
+  who.innerHTML = m.role === "user" ? "🧑" : avatarHtml(speakerChar || char);
   const col = document.createElement("div");
   col.className = "col";
+  if (m.role === "assistant" && isGroupStory() && m.name) {
+    const sp = document.createElement("div"); sp.className = "speaker"; sp.textContent = m.name;
+    col.appendChild(sp);
+  }
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   bubble.innerHTML = formatContent(m.content);
@@ -135,14 +143,31 @@ function scrollToBottom() { const m = $("#messages"); m.scrollTop = m.scrollHeig
 
 function updateHeader() {
   const char = currentCharacter();
-  $("#active-avatar").innerHTML = char ? avatarHtml(char) : "🎭";
-  $("#active-name").textContent = char ? char.name : (state.story ? state.story.title : "Pick a character to begin");
+  const group = isGroupStory();
+  $("#active-avatar").innerHTML = group ? "👥" : (char ? avatarHtml(char) : "🎭");
+  $("#active-name").textContent = group ? (state.story.title || "Group scene")
+    : (char ? char.name : (state.story ? state.story.title : "Pick a character to begin"));
   const open = !!state.story;
   $("#edit-active-char").classList.toggle("hidden", !char);
   $("#settings-btn").classList.toggle("hidden", !open);
   $("#composer").classList.toggle("hidden", !open);
   $("#an-bar").classList.toggle("hidden", !open);
   if (open) $("#an-input").value = (state.story.authors_note || {}).text || "";
+  renderGroupBar();
+}
+
+function renderGroupBar() {
+  const bar = $("#group-bar");
+  if (!isGroupStory()) { bar.classList.add("hidden"); bar.innerHTML = ""; return; }
+  bar.innerHTML = `<span class="hint">Tap to make them speak:</span>`;
+  for (const c of groupMembers()) {
+    const chip = document.createElement("div");
+    chip.className = "group-chip";
+    chip.innerHTML = `${avatarHtml(c)}<span>${escapeHtml(c.name)}</span>`;
+    chip.onclick = () => chatAction("group_speak", null, c.id);
+    bar.appendChild(chip);
+  }
+  bar.classList.remove("hidden");
 }
 
 // ---------- inline edit ----------
@@ -170,7 +195,7 @@ function startEdit(i, bubble) {
 }
 
 // ---------- chat ----------
-async function chatAction(action, userText) {
+async function chatAction(action, userText, charId) {
   if (!state.story || state.streaming) return;
   if (!state.story.model) {
     await api.storyMeta(state.story.id, { model: state.model });
@@ -188,7 +213,12 @@ async function chatAction(action, userText) {
   const tmp = document.createElement("div");
   tmp.className = "msg ai";
   const char = currentCharacter();
-  tmp.innerHTML = `<div class="who">${char ? avatarHtml(char) : "🎭"}</div><div class="col"><div class="bubble cursor"></div></div>`;
+  let tmpAvatar = char ? avatarHtml(char) : "🎭";
+  if (isGroupStory()) {
+    const sp = charId ? state.characters.find((c) => c.id === charId) : null;
+    tmpAvatar = sp ? avatarHtml(sp) : "👥";
+  }
+  tmp.innerHTML = `<div class="who">${tmpAvatar}</div><div class="col"><div class="bubble cursor"></div></div>`;
   if ($("#empty-state")) renderMessages();
   $("#messages").appendChild(tmp);
   const tmpBubble = tmp.querySelector(".bubble");
@@ -203,7 +233,7 @@ async function chatAction(action, userText) {
   try {
     const resp = await fetch("/api/chat", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ story_id: state.story.id, action, user_message: userText || null, settings: {} }),
+      body: JSON.stringify({ story_id: state.story.id, action, user_message: userText || null, char_id: charId || null, settings: {} }),
       signal: state.abort.signal,
     });
     const reader = resp.body.getReader();
@@ -335,6 +365,37 @@ function openGreetChooser(char, alts) {
     box.appendChild(el);
   }
   $("#greet-modal").classList.remove("hidden");
+}
+
+function openGroupModal() {
+  if (state.characters.length < 2) { alert("Create at least two characters first."); return; }
+  const box = $("#group-pick");
+  box.innerHTML = "";
+  for (const c of state.characters) {
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="checkbox" value="${escapeHtml(c.id)}" /> <span class="em">${avatarHtml(c)}</span> <span>${escapeHtml(c.name)}</span>`;
+    box.appendChild(label);
+  }
+  $("#group-modal").classList.remove("hidden");
+}
+
+async function createGroupStory() {
+  const ids = [...$("#group-pick").querySelectorAll("input:checked")].map((i) => i.value);
+  if (ids.length < 2) { alert("Pick at least two characters."); return; }
+  const members = ids.map((id) => state.characters.find((c) => c.id === id)).filter(Boolean);
+  const messages = [];
+  for (const c of members) {
+    if (c.greeting && c.greeting.trim())
+      messages.push({ role: "assistant", content: c.greeting, char_id: c.id, name: c.name, swipes: [c.greeting], swipe_id: 0 });
+  }
+  const title = "Group: " + members.map((c) => c.name).join(" & ");
+  const created = await api.createStory({ title, member_ids: ids, character_name: title, model: state.model, messages });
+  $("#group-modal").classList.add("hidden");
+  state.story = created;
+  await refreshStories();
+  renderMessages(); updateHeader();
+  $("#ctx-meter").classList.add("hidden");
+  $("#input").focus();
 }
 
 async function openStory(id) {
@@ -656,6 +717,12 @@ function init() {
   // greeting chooser
   $("#greet-cancel").onclick = () => $("#greet-modal").classList.add("hidden");
   bindModal("#greet-modal", []);
+
+  // group scenes
+  $("#new-group-btn").onclick = openGroupModal;
+  $("#group-cancel").onclick = () => $("#group-modal").classList.add("hidden");
+  $("#group-create").onclick = createGroupStory;
+  bindModal("#group-modal", []);
 
   // character modal
   $("#new-char-btn").onclick = () => openCharModal(null);

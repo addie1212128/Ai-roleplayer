@@ -147,6 +147,19 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .empty-state .big { font-size: 56px; }
 .empty-state h2 { color: var(--text); margin: 8px 0; }
 
+.msg .speaker { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 2px; }
+
+.group-bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 20px 0; background: var(--panel); }
+.group-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 20px; cursor: pointer; font-size: 13px; background: var(--panel-2); }
+.group-chip:hover { border-color: var(--accent); }
+.group-chip img.av { width: 20px; height: 20px; border-radius: 50%; }
+.group-pick { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow-y: auto; }
+.group-pick label { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; cursor: pointer; }
+.group-pick label:hover { background: var(--panel-2); }
+.group-pick input { width: auto; }
+.group-pick .em { font-size: 20px; }
+.group-pick img.av { width: 26px; height: 26px; }
+
 .an-bar { padding: 8px 20px 0; background: var(--panel); }
 .an-bar input { background: var(--bg); border-color: var(--border); font-size: 13px; }
 
