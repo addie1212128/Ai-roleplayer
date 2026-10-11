@@ -97,6 +97,47 @@ You write only for {{char}}, other NPCs, and the surrounding world.{pov_line} Tr
 Wrap actions and narration in *asterisks*; put spoken words in "quotation marks". Match the length and style of the opening message. Vary your sentence openings. Avoid tired clichés like "a shiver down the spine", "barely above a whisper", "eyes sparkling with mischief", and the "not X, but Y" construction."""
 
 
+def parse_ban_phrases(raw) -> list[str]:
+    """Clean a user's anti-slop ban list into a bounded, de-duped phrase list.
+
+    One phrase per line (so a phrase may itself contain commas, e.g. the classic
+    "not X, but Y"). Tolerates a raw string or an already-split list; strips
+    blanks and case-insensitive duplicates and caps the count so a huge list
+    can't blow the prompt budget.
+    """
+    if isinstance(raw, (list, tuple)):
+        parts = [str(p) for p in raw]
+    elif isinstance(raw, str):
+        parts = raw.splitlines()
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+        if len(out) >= 60:          # bound prompt bloat from a pasted wall of text
+            break
+    return out
+
+
+def ban_phrases_injection(raw) -> Optional[str]:
+    """A strong, late system line telling the model to avoid the banned phrases,
+    or None if the list is empty."""
+    bans = parse_ban_phrases(raw)
+    if not bans:
+        return None
+    quoted = ", ".join(f'"{b}"' for b in bans)
+    return ("[Banned words and phrases — do NOT use any of these, or an obvious "
+            f"paraphrase, anywhere in your reply: {quoted}. Rewrite around them.]")
+
+
 def _pov_line(pov: str) -> str:
     if pov == "first":
         return " Write in first person as {{char}}."
@@ -448,6 +489,10 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
     phi = substitute((character.get("post_history_instructions") or "").strip(), char_name, user_name)
     if phi:
         depth_injections.append((0, {"role": "system", "content": phi}))
+
+    ban_line = ban_phrases_injection(settings.get("ban_phrases"))
+    if ban_line:
+        depth_injections.append((0, {"role": "system", "content": ban_line}))
 
     reminder = (f"[Stay in character as {char_name}. Write only {char_name} and the world, "
                 f"never {user_name}. End on an opening and stop.]")

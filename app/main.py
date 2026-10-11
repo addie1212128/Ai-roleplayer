@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import io
 import json
 import os
 import re
+import time
 import zipfile
 from pathlib import Path
 from typing import List, Optional
@@ -28,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from . import cards, context, rag, storage
-from .samplers import DEFAULTS, build_options, preset_for
+from .samplers import DEFAULTS, build_options, pick_sampler_fields, preset_for
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 # When set (run.py sets it automatically if bound beyond loopback), every /api/
@@ -121,6 +123,7 @@ class ChatReq(BaseModel):
     action: str = "send"           # send | regenerate | swipe | continue | group_speak
     user_message: Optional[str] = None
     char_id: Optional[str] = None  # group_speak: which member should reply
+    note: Optional[str] = None     # one-off steering for THIS turn (not persisted)
     settings: dict = {}
 
 
@@ -131,6 +134,10 @@ class MessageEdit(BaseModel):
 
 class SwipeSelect(BaseModel):
     swipe_id: int
+
+
+class BranchCreate(BaseModel):
+    name: Optional[str] = None
 
 
 class Lorebook(BaseModel):
@@ -147,6 +154,13 @@ class Persona(BaseModel):
     id: Optional[str] = None
     name: str
     description: str = ""
+
+
+class SamplerPreset(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: Optional[str] = None
+    name: str
+    settings: dict = {}
 
 
 class ImportReq(BaseModel):
@@ -217,10 +231,16 @@ def _extract_json(text: str) -> Optional[dict]:
         return None
 
 
-def effective_settings(story: dict, override: dict) -> dict:
-    """preset(model)  <-  story.settings  <-  per-call override."""
+def effective_settings(story: dict, override: dict, char_defaults: Optional[dict] = None) -> dict:
+    """preset(model)  <-  character defaults  <-  story.settings  <-  per-call override.
+
+    A character's `default_settings` sit just above the model preset, so a story
+    or an explicit override always wins. They can carry sampler knobs and the RP
+    toggles but never the model (that is fixed from the story/override below)."""
     model = (override or {}).get("model") or story.get("model") or ""
     s = preset_for(model)
+    if char_defaults:
+        s.update(pick_sampler_fields(char_defaults))
     s.update(story.get("settings") or {})
     s.update(override or {})
     s["model"] = model
@@ -322,6 +342,33 @@ def _invalidate_summaries(story: dict, from_index: int) -> None:
                           if s.get("range", [0, 0])[1] <= from_index]
 
 
+MAX_BRANCHES = 50
+
+
+def _branch_meta(b: dict) -> dict:
+    """Lightweight view of a saved branch (no message bodies)."""
+    return {"id": b.get("id"), "name": b.get("name", "Timeline"),
+            "created": b.get("created"), "auto": bool(b.get("auto")),
+            "turns": len(b.get("messages", []))}
+
+
+def _story_response(story: dict) -> dict:
+    """Story as sent to the UI: branches reduced to metadata so opening a story
+    (and the post-turn re-sync) never ships every branch's full message history.
+    The on-disk story and the JSON export keep the full branch bodies."""
+    if not story.get("branches"):
+        return story
+    out = dict(story)
+    out["branches"] = [_branch_meta(b) for b in story["branches"]]
+    return out
+
+
+def _snapshot(story: dict, name: str, auto: bool = False) -> dict:
+    return {"id": storage.new_id(), "name": name[:120], "created": time.time(),
+            "auto": auto, "messages": copy.deepcopy(story.get("messages", [])),
+            "summaries": copy.deepcopy(story.get("summaries", []))}
+
+
 # --- Ollama / models ----------------------------------------------------------
 
 @app.get("/api/models")
@@ -398,7 +445,7 @@ async def chat(req: ChatReq):
                 return
             msgs = story.setdefault("messages", [])
             character, persona, lorebook = _resolve_actors(story)
-            settings = effective_settings(story, req.settings)
+            settings = effective_settings(story, req.settings, character.get("default_settings"))
             model = settings.get("model")
             if not model:
                 yield _sse({"error": "No model selected. Pull one in Ollama (e.g. "
@@ -459,6 +506,8 @@ async def chat(req: ChatReq):
                 character = active
                 lb_id = active.get("lorebook_id") or story.get("lorebook_id")
                 lorebook = storage.get_lorebook(lb_id) if lb_id else None
+                # Re-layer with the active speaker's own defaults (model stays fixed).
+                settings = effective_settings(story, req.settings, active.get("default_settings"))
 
             ctx_story = dict(story)
             ctx_story["messages"] = (context.label_group_history(ctx_msgs)
@@ -495,6 +544,13 @@ async def chat(req: ChatReq):
                     f"as {user_name} — 1 to 3 sentences in their established voice. Output ONLY "
                     f"{user_name}'s own words and actions; do not write for "
                     f"{character.get('name', 'the character')} or narrate other characters.]")})
+            # One-off steering for this turn only (guided regenerate / swipe). Goes
+            # last so it's the strongest instruction, and is never persisted.
+            note = (req.note or "").strip()[:2000]
+            if note:
+                messages.append({"role": "system", "content": (
+                    f"[Director's note — apply this to the reply you are about to write; "
+                    f"do not mention or quote this note: {note}]")})
 
             payload = {
                 "model": model,
@@ -613,7 +669,7 @@ async def debug_prompt(story_id: str):
     if not story:
         raise HTTPException(404, "Story not found")
     character, persona, lorebook = _resolve_actors(story)
-    settings = effective_settings(story, {})
+    settings = effective_settings(story, {}, character.get("default_settings"))
     return context.assemble_prompt(story, character, persona, lorebook, settings)
 
 
@@ -737,7 +793,7 @@ async def get_story(sid: str):
     story = storage.get_story(sid)
     if not story:
         raise HTTPException(404, "Story not found")
-    return story
+    return _story_response(story)
 
 
 @app.get("/api/stories/{sid}/export")
@@ -836,7 +892,7 @@ async def create_story(story: StoryCreate):
             m["swipe_id"] = 0
     data.setdefault("summaries", [])
     data.setdefault("authors_note", {"text": "", "depth": 4, "role": "system"})
-    return storage.save_story(data)
+    return _story_response(storage.save_story(data))
 
 
 @app.delete("/api/stories/{sid}")
@@ -857,7 +913,7 @@ async def update_story_meta(sid: str, meta: StoryMeta):
         # (sent as null) while omitted fields stay untouched.
         patch = meta.model_dump(exclude_unset=True)
         story.update(patch)
-        return storage.save_story(story)
+        return _story_response(storage.save_story(story))
 
 
 @app.put("/api/stories/{sid}/message/{idx}")
@@ -917,6 +973,66 @@ async def delete_from(sid: str, idx: int):
         return {"ok": True, "length": len(story["messages"])}
 
 
+# --- branches (saved alternate timelines) -------------------------------------
+
+@app.get("/api/stories/{sid}/branches")
+async def list_branches(sid: str):
+    story = storage.get_story(sid)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    return [_branch_meta(b) for b in story.get("branches", [])]
+
+
+@app.post("/api/stories/{sid}/branches")
+async def create_branch(sid: str, req: BranchCreate):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        branches = story.setdefault("branches", [])
+        name = (req.name or "").strip() or f"Timeline {len(branches) + 1}"
+        branch = _snapshot(story, name)
+        branches.append(branch)
+        if len(branches) > MAX_BRANCHES:        # bound file growth; drop oldest
+            del branches[0:len(branches) - MAX_BRANCHES]
+        storage.save_story(story)
+        return {"ok": True, "branch": _branch_meta(branch), "count": len(branches)}
+
+
+@app.post("/api/stories/{sid}/branches/{bid}/restore")
+async def restore_branch(sid: str, bid: str):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        branches = story.setdefault("branches", [])
+        target = next((b for b in branches if b.get("id") == bid), None)
+        if not target:
+            raise HTTPException(404, "Branch not found")
+        # Never destroy the live timeline: keep ONE rolling auto-snapshot of it
+        # so an accidental restore is always reversible.
+        branches[:] = [b for b in branches if not b.get("auto")]
+        branches.append(_snapshot(story, "⏱ Before restore (auto)", auto=True))
+        story["messages"] = copy.deepcopy(target.get("messages", []))
+        story["summaries"] = copy.deepcopy(target.get("summaries", []))
+        return _story_response(storage.save_story(story))
+
+
+@app.delete("/api/stories/{sid}/branches/{bid}")
+async def delete_branch(sid: str, bid: str):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        branches = story.get("branches", [])
+        kept = [b for b in branches if b.get("id") != bid]
+        if len(kept) == len(branches):
+            raise HTTPException(404, "Branch not found")
+        story["branches"] = kept
+        storage.save_story(story)
+        return {"ok": True}
+
+
 # --- lorebooks ----------------------------------------------------------------
 
 @app.get("/api/lorebooks")
@@ -974,6 +1090,35 @@ async def update_persona(pid: str, persona: Persona):
 async def remove_persona(pid: str):
     if not storage.delete_persona(pid):
         raise HTTPException(404, "Persona not found")
+    return {"ok": True}
+
+
+# --- sampler presets (named generation-setting bundles) -----------------------
+
+@app.get("/api/sampler_presets")
+async def get_sampler_presets():
+    return storage.list_sampler_presets()
+
+
+@app.post("/api/sampler_presets")
+async def create_sampler_preset(preset: SamplerPreset):
+    data = preset.model_dump()
+    data["settings"] = pick_sampler_fields(data.get("settings") or {})
+    return storage.save_sampler_preset(data)
+
+
+@app.put("/api/sampler_presets/{pid}")
+async def update_sampler_preset(pid: str, preset: SamplerPreset):
+    data = preset.model_dump()
+    data["id"] = pid
+    data["settings"] = pick_sampler_fields(data.get("settings") or {})
+    return storage.save_sampler_preset(data)
+
+
+@app.delete("/api/sampler_presets/{pid}")
+async def remove_sampler_preset(pid: str):
+    if not storage.delete_sampler_preset(pid):
+        raise HTTPException(404, "Preset not found")
     return {"ok": True}
 
 

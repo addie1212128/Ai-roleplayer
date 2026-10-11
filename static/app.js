@@ -6,7 +6,7 @@
 const $ = (s) => document.querySelector(s);
 
 const state = {
-  characters: [], stories: [], personas: [], lorebooks: [],
+  characters: [], stories: [], personas: [], lorebooks: [], samplerPresets: [],
   story: null, model: null,
   streaming: false, abort: null,
   editingCharId: null, editingPersonaId: null, editingLoreId: null,
@@ -52,6 +52,10 @@ const api = {
   importStory: (filename, data_b64) => jsend("/api/stories/import", "POST", { filename, data_b64 }),
   deleteStory: (id) => fetch(`/api/stories/${id}`, { method: "DELETE", headers: authH() }),
   storyMeta: (id, patch) => jsend(`/api/stories/${id}/meta`, "PUT", patch),
+  listBranches: (id) => jget(`/api/stories/${id}/branches`),
+  saveBranch: (id, name) => jsend(`/api/stories/${id}/branches`, "POST", { name }),
+  restoreBranch: (id, bid) => jsend(`/api/stories/${id}/branches/${bid}/restore`, "POST"),
+  deleteBranch: (id, bid) => fetch(`/api/stories/${id}/branches/${bid}`, { method: "DELETE", headers: authH() }),
   editMessage: (id, idx, content) => jsend(`/api/stories/${id}/message/${idx}`, "PUT", { content }),
   selectSwipe: (id, idx, swipe_id) => jsend(`/api/stories/${id}/message/${idx}/swipe`, "PUT", { swipe_id }),
   deleteFrom: (id, idx) => fetch(`/api/stories/${id}/message/${idx}`, { method: "DELETE", headers: authH() }),
@@ -61,6 +65,9 @@ const api = {
   lorebooks: () => jget("/api/lorebooks"),
   saveLorebook: (b) => jsend(b.id ? `/api/lorebooks/${b.id}` : "/api/lorebooks", b.id ? "PUT" : "POST", b),
   deleteLorebook: (id) => fetch(`/api/lorebooks/${id}`, { method: "DELETE", headers: authH() }),
+  samplerPresets: () => jget("/api/sampler_presets"),
+  saveSamplerPreset: (p) => jsend(p.id ? `/api/sampler_presets/${p.id}` : "/api/sampler_presets", p.id ? "PUT" : "POST", p),
+  deleteSamplerPreset: (id) => fetch(`/api/sampler_presets/${id}`, { method: "DELETE", headers: authH() }),
 };
 
 // ---------- helpers ----------
@@ -147,12 +154,66 @@ function buildControls(m, i, isLast, bubble) {
     nav.append(left, count, right);
     ctl.appendChild(nav);
     ctl.appendChild(btn("↻", "Regenerate", () => chatAction("regenerate")));
+    ctl.appendChild(btn("🎬", "Guided regenerate — redo this reply with a note", () => startGuide(i, bubble)));
     ctl.appendChild(btn("↳", "Continue", () => chatAction("continue")));
   }
   if (isAssistant && "speechSynthesis" in window) ctl.appendChild(btn("🔊", "Read aloud", () => speak(m.content)));
+  ctl.appendChild(btn("📋", "Copy text", () => copyMessage(m)));
   ctl.appendChild(btn("✎", "Edit", () => startEdit(i, bubble)));
   ctl.appendChild(btn("🗑", "Delete from here", () => deleteFrom(i)));
   return ctl;
+}
+
+// Copy a message's current text to the clipboard (with an execCommand fallback
+// for non-secure contexts / headless browsers where navigator.clipboard throws).
+async function copyMessage(m) {
+  const text = (m && m.content) || "";
+  if (!text) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error("no clipboard api");
+    }
+    showToast("📋 Copied");
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      showToast(ok ? "📋 Copied" : "⚠️ Couldn't copy");
+    } catch { showToast("⚠️ Couldn't copy"); }
+  }
+}
+
+// Guided regenerate: a small inline note box under the message. The note steers
+// only this one regeneration (server-side, never persisted).
+function startGuide(i, bubble) {
+  if (state.streaming) return;
+  const col = bubble.closest(".col");
+  if (!col || col.querySelector(".guide-row")) return;   // already open
+  const row = document.createElement("div");
+  row.className = "guide-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "guide-input";
+  input.placeholder = "How should this reply change? (e.g. shorter, angrier, add a twist)…";
+  const go = document.createElement("button");
+  go.className = "primary"; go.textContent = "Regenerate";
+  const cancel = document.createElement("button");
+  cancel.className = "ghost"; cancel.textContent = "Cancel";
+  row.append(input, go, cancel);
+  col.appendChild(row);
+  input.focus();
+  const run = () => { const note = input.value.trim(); row.remove(); chatAction("regenerate", null, null, note || null); };
+  cancel.onclick = () => row.remove();
+  go.onclick = run;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); run(); }
+    else if (e.key === "Escape") { e.preventDefault(); row.remove(); }
+  });
 }
 
 function scrollToBottom() { const m = $("#messages"); m.scrollTop = m.scrollHeight; }
@@ -165,6 +226,7 @@ function updateHeader() {
     : (char ? char.name : (state.story ? state.story.title : "Pick a character to begin"));
   const open = !!state.story;
   $("#edit-active-char").classList.toggle("hidden", !char);
+  $("#branch-btn").classList.toggle("hidden", !open);
   $("#settings-btn").classList.toggle("hidden", !open);
   $("#composer").classList.toggle("hidden", !open);
   $("#an-bar").classList.toggle("hidden", !open);
@@ -214,7 +276,7 @@ function startEdit(i, bubble) {
 }
 
 // ---------- chat ----------
-async function chatAction(action, userText, charId) {
+async function chatAction(action, userText, charId, note) {
   if (!state.story || state.streaming) return;
   if (!state.story.model) {
     await api.storyMeta(state.story.id, { model: state.model });
@@ -252,7 +314,7 @@ async function chatAction(action, userText, charId) {
   try {
     const resp = await fetch("/api/chat", {
       method: "POST", headers: authH({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ story_id: state.story.id, action, user_message: userText || null, char_id: charId || null, settings: {} }),
+      body: JSON.stringify({ story_id: state.story.id, action, user_message: userText || null, char_id: charId || null, note: note || null, settings: {} }),
       signal: state.abort.signal,
     });
     const reader = resp.body.getReader();
@@ -384,6 +446,50 @@ function cycleTheme() {
   const next = order[(order.indexOf(_theme()) + 1) % order.length];
   try { localStorage.setItem("rp-theme", next); } catch (e) {}
   applyTheme(next);
+}
+
+// ---------- keyboard shortcuts ----------
+function _openModals() { return [...document.querySelectorAll(".modal:not(.hidden)")]; }
+function _isTyping(el) {
+  return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+}
+function _lastIdx() { const m = state.story && state.story.messages; return m && m.length ? m.length - 1 : -1; }
+function _lastIsAssistant() { const i = _lastIdx(); return i >= 0 && state.story.messages[i].role === "assistant"; }
+
+const SHORTCUTS = [
+  ["Enter", "Send message"],
+  ["Shift+Enter", "New line"],
+  ["← / →", "Previous / next version of the last reply"],
+  ["R", "Regenerate last reply"],
+  ["G", "Guided regenerate (give a note)"],
+  ["C", "Focus the composer"],
+  ["Esc", "Close dialog / cancel"],
+  ["?", "Show this list"],
+];
+function showShortcuts() { showToast("⌨️ Shortcuts — " + SHORTCUTS.map(([k, d]) => `${k}: ${d}`).join("  ·  ")); }
+
+function bindShortcuts() {
+  document.addEventListener("keydown", (e) => {
+    // Escape always works: cancel an open guide box, else close the top modal.
+    if (e.key === "Escape") {
+      const guide = document.querySelector(".guide-row");
+      if (guide) { guide.remove(); return; }
+      const modals = _openModals();
+      if (modals.length) { modals[modals.length - 1].classList.add("hidden"); return; }
+      return;
+    }
+    // Everything below is a single-key shortcut: ignore it while typing, while a
+    // modal is open, or with a modifier held (so it never eats real input).
+    if (_isTyping(e.target) || _openModals().length || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "?") { e.preventDefault(); showShortcuts(); return; }
+    if (!state.story || state.streaming) return;
+    const i = _lastIdx();
+    if (e.key === "c") { e.preventDefault(); const inp = $("#input"); if (inp) inp.focus(); return; }
+    if (e.key === "r") { if (_lastIsAssistant()) { e.preventDefault(); chatAction("regenerate"); } return; }
+    if (e.key === "g") { if (_lastIsAssistant()) { e.preventDefault(); const b = $("#messages .msg.ai:last-child .bubble"); if (b) startGuide(i, b); } return; }
+    if (e.key === "ArrowLeft") { if (_lastIsAssistant()) { e.preventDefault(); swipe(i, -1); } return; }
+    if (e.key === "ArrowRight") { if (_lastIsAssistant()) { e.preventDefault(); swipe(i, 1); } return; }
+  });
 }
 
 function showToast(msg) {
@@ -609,6 +715,9 @@ function openCharModal(char) {
   lbSel.value = g("lorebook_id");
   const pf = { "c-age": "age", "c-gender": "gender", "c-career": "career", "c-aspiration": "aspiration", "c-traits": "traits", "c-skills": "skills", "c-speech": "speech_style", "c-relationships": "relationships", "c-living": "living" };
   for (const [id, key] of Object.entries(pf)) $("#" + id).value = g(key);
+  const ds = (char && char.default_settings) || {};
+  $("#c-def-temp").value = ds.temperature != null ? ds.temperature : "";
+  $("#c-def-pred").value = ds.num_predict != null ? ds.num_predict : "";
   $("#char-delete").classList.toggle("hidden", !char);
   $("#char-export").classList.toggle("hidden", !char);
   updatePermTokens();
@@ -634,6 +743,11 @@ function updatePermTokens() {
 async function saveCharFromModal() {
   const name = $("#c-name").value.trim();
   if (!name) { alert("Give your character a name."); return; }
+  const ds = {};
+  const dTemp = parseFloat($("#c-def-temp").value);
+  if (!Number.isNaN(dTemp)) ds.temperature = dTemp;
+  const dPred = parseInt($("#c-def-pred").value, 10);
+  if (!Number.isNaN(dPred)) ds.num_predict = dPred;
   const char = {
     id: state.editingCharId, avatar: $("#c-avatar").value.trim() || "🎭", name,
     description: $("#c-description").value.trim(), personality: $("#c-personality").value.trim(),
@@ -648,6 +762,7 @@ async function saveCharFromModal() {
     traits: $("#c-traits").value.trim(), skills: $("#c-skills").value.trim(),
     speech_style: $("#c-speech").value.trim(), relationships: $("#c-relationships").value.trim(),
     living: $("#c-living").value.trim(),
+    default_settings: Object.keys(ds).length ? ds : null,
   };
   await api.saveCharacter(char);
   closeCharModal();
@@ -727,6 +842,55 @@ async function saveLoreFromModal() {
   await refreshLorebooks();
 }
 
+// ---------- branches (saved timelines) ----------
+async function openBranchModal() {
+  if (!state.story) return;
+  $("#branch-name").value = "";
+  await renderBranchList();
+  $("#branch-modal").classList.remove("hidden");
+  $("#branch-name").focus();
+}
+async function renderBranchList() {
+  const box = $("#branch-list"); box.innerHTML = "";
+  let list = [];
+  try { list = await api.listBranches(state.story.id); } catch { list = []; }
+  if (!list.length) { box.innerHTML = `<div class="hint">No saved branches yet. Save one above to remember this point.</div>`; return; }
+  list.slice().reverse().forEach((b) => {   // newest first
+    const when = b.created ? new Date(b.created * 1000).toLocaleString() : "";
+    box.appendChild(listItem({
+      emoji: b.auto ? "⏱" : "🌿", title: b.name, sub: `${b.turns} msgs${when ? " · " + when : ""}`,
+      onClick: () => restoreBranch(b),
+      actions: [
+        { label: "⤵", title: "Restore this timeline", fn: () => restoreBranch(b) },
+        { label: "🗑", title: "Delete branch", cls: "del", fn: async () => {
+            if (!confirm(`Delete branch “${b.name}”?`)) return;
+            await api.deleteBranch(state.story.id, b.id); await renderBranchList();
+        } },
+      ],
+    }));
+  });
+}
+async function saveBranchFromModal() {
+  if (!state.story) return;
+  try {
+    await api.saveBranch(state.story.id, $("#branch-name").value.trim());
+    $("#branch-name").value = "";
+    await renderBranchList();
+    showToast("🌿 Timeline saved");
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+async function restoreBranch(b) {
+  if (!state.story || state.streaming) return;
+  if (!confirm(`Restore “${b.name}”? Your current timeline is auto-saved first.`)) return;
+  try {
+    state.story = await api.restoreBranch(state.story.id, b.id);
+    $("#branch-modal").classList.add("hidden");
+    renderMessages(); updateHeader(); refreshStories();
+    $("#ctx-meter").classList.add("hidden");
+    showToast("🌿 Restored");
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
 // ---------- settings drawer ----------
 async function openSettings() {
   if (!state.story) return;
@@ -749,16 +913,52 @@ async function openSettings() {
   $("#s-embed").value = s.embed_model || "nomic-embed-text";
   $("#s-inner").checked = !!s.inner_monologue;
   $("#s-scene").value = state.story.scene || "";
+  $("#s-ban").value = s.ban_phrases || "";
+  $("#s-preset-name").value = "";
+  await loadSamplerPresets();
   $("#settings-modal").classList.remove("hidden");
 }
-async function saveSettings() {
-  const settings = {
+
+// The sampler knobs a story / preset / character-default can carry (read from
+// the settings-drawer inputs). Kept in one place so Save settings and Save
+// preset stay in sync.
+function currentSamplerInputs() {
+  return {
     temperature: parseFloat($("#s-temp").value), num_ctx: parseInt($("#s-ctx").value),
     num_predict: parseInt($("#s-pred").value), min_p: parseFloat($("#s-minp").value),
     top_p: parseFloat($("#s-topp").value), top_k: parseInt($("#s-topk").value),
     repeat_penalty: parseFloat($("#s-reppen").value), repeat_last_n: parseInt($("#s-repn").value),
+    inner_monologue: $("#s-inner").checked, ban_phrases: $("#s-ban").value,
+  };
+}
+
+// Push a settings bundle onto the drawer inputs (only keys it actually carries).
+function applySamplerSettings(s) {
+  s = s || {};
+  if (s.temperature != null) { $("#s-temp").value = s.temperature; $("#s-temp-val").textContent = (+s.temperature).toFixed(2); }
+  if (s.num_ctx != null) { $("#s-ctx").value = s.num_ctx; $("#s-ctx-val").textContent = s.num_ctx; }
+  if (s.num_predict != null) { $("#s-pred").value = s.num_predict; $("#s-pred-val").textContent = s.num_predict; }
+  if (s.min_p != null) $("#s-minp").value = s.min_p;
+  if (s.top_p != null) $("#s-topp").value = s.top_p;
+  if (s.top_k != null) $("#s-topk").value = s.top_k;
+  if (s.repeat_penalty != null) $("#s-reppen").value = s.repeat_penalty;
+  if (s.repeat_last_n != null) $("#s-repn").value = s.repeat_last_n;
+  if (s.inner_monologue != null) $("#s-inner").checked = !!s.inner_monologue;
+  if (s.ban_phrases != null) $("#s-ban").value = s.ban_phrases;
+}
+
+async function loadSamplerPresets(selectId) {
+  try { state.samplerPresets = await api.samplerPresets(); } catch { state.samplerPresets = []; }
+  const sel = $("#s-preset-list");
+  sel.innerHTML = `<option value="">— choose —</option>` +
+    state.samplerPresets.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
+  if (selectId) sel.value = selectId;
+}
+
+async function saveSettings() {
+  const settings = {
+    ...currentSamplerInputs(),
     rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
-    inner_monologue: $("#s-inner").checked,
   };
   const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value };
   state.story = await api.storyMeta(state.story.id, patch);
@@ -842,6 +1042,7 @@ function init() {
   $("#backup-btn").onclick = () => window.open("/api/backup" + tokenQ(), "_blank");
   $("#story-search").addEventListener("input", (e) => { state.storyQuery = e.target.value; renderStories(); });
   $("#theme-btn").addEventListener("click", cycleTheme);
+  $("#shortcuts-btn").addEventListener("click", showShortcuts);
   applyTheme(_theme());
   $("#impersonate-btn").addEventListener("click", impersonate);
   $("#c-generate").addEventListener("click", generateCharacter);
@@ -920,6 +1121,13 @@ function init() {
   };
   bindModal("#lore-modal", []);
 
+  // branches (saved timelines)
+  $("#branch-btn").onclick = openBranchModal;
+  $("#branch-save").onclick = saveBranchFromModal;
+  $("#branch-cancel").onclick = () => $("#branch-modal").classList.add("hidden");
+  $("#branch-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveBranchFromModal(); } });
+  bindModal("#branch-modal", []);
+
   // settings drawer
   $("#settings-btn").onclick = openSettings;
   $("#settings-cancel").onclick = () => $("#settings-modal").classList.add("hidden");
@@ -934,6 +1142,31 @@ function init() {
     $("#s-pred").value = p.num_predict; $("#s-pred-val").textContent = p.num_predict;
     $("#s-minp").value = p.min_p; $("#s-topp").value = p.top_p; $("#s-topk").value = p.top_k;
     $("#s-reppen").value = p.repeat_penalty; $("#s-repn").value = p.repeat_last_n;
+  };
+
+  // saveable sampler presets
+  $("#s-preset-list").addEventListener("change", () => {
+    const p = state.samplerPresets.find((x) => x.id === $("#s-preset-list").value);
+    if (p) { applySamplerSettings(p.settings || {}); $("#s-preset-name").value = p.name; }
+  });
+  $("#s-preset-save").onclick = async () => {
+    const name = ($("#s-preset-name").value || "").trim()
+      || (state.samplerPresets.find((x) => x.id === $("#s-preset-list").value) || {}).name;
+    if (!name) { showToast("Name the preset first."); return; }
+    // Same name overwrites that preset; a new name creates one.
+    const match = state.samplerPresets.find((x) => (x.name || "").toLowerCase() === name.toLowerCase());
+    try {
+      const saved = await api.saveSamplerPreset({ id: match ? match.id : undefined, name, settings: currentSamplerInputs() });
+      await loadSamplerPresets(saved.id);
+      $("#s-preset-name").value = saved.name;
+      showToast("💾 Preset saved");
+    } catch (e) { showToast("⚠️ " + e.message); }
+  };
+  $("#s-preset-del").onclick = async () => {
+    const sel = $("#s-preset-list").value;
+    if (!sel) { showToast("Pick a preset to delete."); return; }
+    try { await api.deleteSamplerPreset(sel); $("#s-preset-name").value = ""; await loadSamplerPresets(); showToast("🗑 Preset deleted"); }
+    catch (e) { showToast("⚠️ " + e.message); }
   };
 
   // mood (save on change)
@@ -962,6 +1195,8 @@ function init() {
     chatAction("send", text);
   });
   $("#stop-btn").onclick = () => { if (state.abort) state.abort.abort(); };
+
+  bindShortcuts();
 
   // initial load
   (async () => {

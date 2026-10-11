@@ -32,14 +32,15 @@ LORE_DIR = DATA / "lorebooks"
 PERSONA_DIR = DATA / "personas"
 AVATAR_DIR = DATA / "avatars"
 VEC_DIR = DATA / "vectors"
+SAMPLER_DIR = DATA / "sampler_presets"
 PRESET_DIR = ROOT / "presets" / "characters"
 
-_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR)
+_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, SAMPLER_DIR)
 
 
 def use_data_dir(path) -> None:
     """Point every store at a new data root (used by tests)."""
-    global DATA, CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, _DIRS
+    global DATA, CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, SAMPLER_DIR, _DIRS
     DATA = Path(path)
     CHAR_DIR = DATA / "characters"
     STORY_DIR = DATA / "stories"
@@ -47,7 +48,8 @@ def use_data_dir(path) -> None:
     PERSONA_DIR = DATA / "personas"
     AVATAR_DIR = DATA / "avatars"
     VEC_DIR = DATA / "vectors"
-    _DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR)
+    SAMPLER_DIR = DATA / "sampler_presets"
+    _DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, SAMPLER_DIR)
 
 
 def _ensure_dirs() -> None:
@@ -225,3 +227,23 @@ def save_persona(persona: dict) -> dict:
 
 def delete_persona(pid: str) -> bool:
     return _doc_delete(PERSONA_DIR, pid)
+
+
+# ----- sampler presets (named generation-setting bundles) ---------------------
+
+def list_sampler_presets() -> list[dict]:
+    items = _list(SAMPLER_DIR)
+    items.sort(key=lambda p: p.get("name", "").lower())
+    return items
+
+
+def get_sampler_preset(pid: str) -> Optional[dict]:
+    return _doc_get(SAMPLER_DIR, pid)
+
+
+def save_sampler_preset(preset: dict) -> dict:
+    return _doc_save(SAMPLER_DIR, preset)
+
+
+def delete_sampler_preset(pid: str) -> bool:
+    return _doc_delete(SAMPLER_DIR, pid)

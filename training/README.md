@@ -36,6 +36,10 @@ python training/export_gguf.py \
 
 Then open the app, **⚙ Settings → model → `my-roleplayer`**, and play. 🎭
 
+> ☁️ **No GPU / want it faster?** Build on a rented cloud GPU instead — one
+> command on the box, then download the `.gguf` to your local Ollama. See
+> **[CLOUD.md](CLOUD.md)** (and `training/build_on_cloud.sh`).
+
 ---
 
 ## What's here

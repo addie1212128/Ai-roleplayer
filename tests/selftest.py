@@ -34,7 +34,7 @@ import app.storage as storage  # noqa: E402
 storage.use_data_dir(TMP / "data")
 
 from app import cards, context, rag     # noqa: E402
-from app.samplers import preset_for, build_options, DEFAULTS  # noqa: E402
+from app.samplers import preset_for, build_options, pick_sampler_fields, DEFAULTS  # noqa: E402
 
 # ============================================================ pure logic tests
 
@@ -50,6 +50,10 @@ def test_samplers():
     check("clamp: num_ctx capped", clamped["num_ctx"] == 131072)
     check("clamp: num_predict capped", clamped["num_predict"] == 8192)
     check("clamp: temperature capped", clamped["temperature"] == 3.0)
+    picked = pick_sampler_fields({"temperature": 0.7, "ban_phrases": "x", "bogus": 9, "model": "m", "seed": 3, "min_p": None})
+    check("pick_sampler_fields keeps knobs", picked.get("temperature") == 0.7 and picked.get("ban_phrases") == "x")
+    check("pick_sampler_fields drops junk/model/seed/None",
+          "bogus" not in picked and "model" not in picked and "seed" not in picked and "min_p" not in picked)
 
 
 def test_strip_think():
@@ -84,6 +88,29 @@ def test_paper_features():
     # empty profile -> no stray labels
     plain = context.assemble_prompt({"messages": []}, {"name": "Q", "description": "d"}, None, None, {"num_ctx": 8192})
     check("paper: no profile labels when empty", "Career:" not in plain["messages"][0]["content"])
+
+
+def test_ban_phrases():
+    # parser: newline-split, case-insensitive dedupe, blanks dropped, and a
+    # phrase may contain commas (so the classic "not X, but Y" survives intact).
+    bans = context.parse_ban_phrases("shiver down the spine\n\nNOT X, but Y\nshiver down the spine\n")
+    check("ban: parse dedupes + keeps comma phrases",
+          bans == ["shiver down the spine", "NOT X, but Y"], str(bans))
+    check("ban: empty/None -> []", context.parse_ban_phrases("") == [] and context.parse_ban_phrases(None) == [])
+    check("ban: count is bounded", len(context.parse_ban_phrases("\n".join(f"p{i}" for i in range(200)))) == 60)
+    # injection reaches the assembled prompt with the phrases quoted
+    story = {"messages": [{"role": "user", "content": "hi"}]}
+    built = context.assemble_prompt(story, {"name": "Q", "description": "d"}, None, None,
+                                    {"num_ctx": 8192, "ban_phrases": "barely above a whisper\neyes sparkling"})
+    contents = [m["content"] for m in built["messages"]]
+    joined = "\n".join(contents)
+    check("ban: injected into prompt", "Banned words and phrases" in joined and "barely above a whisper" in joined)
+    # the final in-character reminder must stay last (ban line goes before it)
+    ban_idx = max(i for i, c in enumerate(contents) if "Banned words" in c)
+    rem_idx = max(i for i, c in enumerate(contents) if "Stay in character" in c)
+    check("ban: reminder stays after the ban line", rem_idx > ban_idx, f"ban={ban_idx} rem={rem_idx}")
+    plain = context.assemble_prompt(story, {"name": "Q", "description": "d"}, None, None, {"num_ctx": 8192})
+    check("ban: absent when unset", not any("Banned words" in m["content"] for m in plain["messages"]))
 
 
 def test_storage_id_safety():
@@ -570,6 +597,84 @@ def test_integration():
     after = len(client.get(f"/api/stories/{istory['id']}").json()["messages"])
     check("api: impersonate persists nothing", after == before, f"{before}->{after}")
 
+    # guided regenerate: a one-off director's note steers THIS turn — it reaches
+    # the model as a final system line but is never written to the story.
+    client.post("/api/chat", json={"story_id": istory["id"], "action": "regenerate",
+                                   "note": "make it colder and shorter"})
+    note_sys = "\n".join(m.get("content", "") for m in _last_payload.get("messages", []) if m["role"] == "system")
+    check("api: director's note reaches the model",
+          "Director's note" in note_sys and "colder and shorter" in note_sys, note_sys[-160:])
+    saved = client.get(f"/api/stories/{istory['id']}").json()
+    check("api: director's note not persisted",
+          not any("Director's note" in (m.get("content") or "") for m in saved["messages"]))
+
+    # anti-slop ban list flows story.settings -> effective_settings -> prompt
+    client.put(f"/api/stories/{istory['id']}/meta", json={"settings": {"ban_phrases": "mischievous glint"}})
+    client.post("/api/chat", json={"story_id": istory["id"], "action": "regenerate"})
+    ban_sys = "\n".join(m.get("content", "") for m in _last_payload.get("messages", []) if m["role"] == "system")
+    check("api: ban_phrases flow via story settings",
+          "Banned words and phrases" in ban_sys and "mischievous glint" in ban_sys, ban_sys[-160:])
+
+    # per-character default sampler settings: the character's default applies,
+    # and an explicit story setting still overrides it.
+    dc = client.post("/api/characters", json={"name": "Dee", "description": "d", "greeting": "hi",
+                                              "default_settings": {"temperature": 0.4, "bogus": 1}}).json()
+    check("api: character stores default_settings", dc.get("default_settings", {}).get("temperature") == 0.4)
+    dstory = client.post("/api/stories", json={"title": "D", "character_id": dc["id"], "character_name": "Dee",
+                                               "model": "mistral-nemo:12b",
+                                               "messages": [{"role": "assistant", "content": "hi"},
+                                                            {"role": "user", "content": "yo"}]}).json()
+    client.post("/api/chat", json={"story_id": dstory["id"], "action": "regenerate"})
+    check("api: character default temperature applied",
+          _last_payload.get("options", {}).get("temperature") == 0.4, str(_last_payload.get("options")))
+    client.put(f"/api/stories/{dstory['id']}/meta", json={"settings": {"temperature": 1.3}})
+    client.post("/api/chat", json={"story_id": dstory["id"], "action": "regenerate"})
+    check("api: story setting overrides character default",
+          _last_payload.get("options", {}).get("temperature") == 1.3, str(_last_payload.get("options")))
+
+    # sampler presets (named generation-setting bundles): CRUD + field filtering
+    sp = client.post("/api/sampler_presets",
+                     json={"name": "Spicy", "settings": {"temperature": 1.4, "bogus": 9, "model": "x"}}).json()
+    check("api: sampler preset created + filtered",
+          bool(sp["id"]) and sp["settings"].get("temperature") == 1.4
+          and "bogus" not in sp["settings"] and "model" not in sp["settings"], str(sp.get("settings")))
+    check("api: sampler preset listed", any(p["id"] == sp["id"] for p in client.get("/api/sampler_presets").json()))
+    up = client.put(f"/api/sampler_presets/{sp['id']}",
+                    json={"name": "Spicy2", "settings": {"temperature": 1.5}}).json()
+    check("api: sampler preset updated", up["name"] == "Spicy2" and up["settings"]["temperature"] == 1.5)
+    check("api: sampler preset deleted", client.delete(f"/api/sampler_presets/{sp['id']}").json().get("ok"))
+    check("api: sampler preset gone",
+          not any(p["id"] == sp["id"] for p in client.get("/api/sampler_presets").json()))
+
+    # chat branching: snapshot a timeline, diverge, restore it (non-destructively)
+    bstory = client.post("/api/stories", json={"title": "Branch", "character_id": char["id"],
+                                               "character_name": "Aria", "model": "mistral-nemo:12b",
+                                               "messages": [{"role": "assistant", "content": "start"},
+                                                            {"role": "user", "content": "u1"}]}).json()
+    bsave = client.post(f"/api/stories/{bstory['id']}/branches", json={"name": "Path A"}).json()
+    check("api: branch saved", bsave.get("ok") and bsave["branch"]["turns"] == 2 and bsave["branch"]["name"] == "Path A")
+    bid = bsave["branch"]["id"]
+    client.post("/api/chat", json={"story_id": bstory["id"], "action": "send", "user_message": "u2"})
+    after = client.get(f"/api/stories/{bstory['id']}").json()
+    check("api: timeline diverged", len(after["messages"]) == 4, str(len(after["messages"])))
+    check("api: get_story returns branch meta, not bodies",
+          bool(after.get("branches")) and "messages" not in after["branches"][0]
+          and after["branches"][0]["turns"] == 2, str(after.get("branches")))
+    restored = client.post(f"/api/stories/{bstory['id']}/branches/{bid}/restore").json()
+    check("api: restore swaps the live timeline",
+          len(restored["messages"]) == 2 and restored["messages"][-1]["content"] == "u1", str(len(restored["messages"])))
+    names = [b["name"] for b in client.get(f"/api/stories/{bstory['id']}/branches").json()]
+    check("api: restore auto-saves the prior timeline", any("Before restore" in n for n in names), str(names))
+    check("api: branch listed", any(b["id"] == bid for b in client.get(f"/api/stories/{bstory['id']}/branches").json()))
+    check("api: branch deleted", client.delete(f"/api/stories/{bstory['id']}/branches/{bid}").json().get("ok"))
+    check("api: branch gone",
+          not any(b["id"] == bid for b in client.get(f"/api/stories/{bstory['id']}/branches").json()))
+    # export keeps full branch bodies (so re-import restores them)
+    bexp = client.get(f"/api/stories/{bstory['id']}/export").json()
+    check("api: export preserves full branch bodies",
+          bool(bexp.get("branches")) and isinstance(bexp["branches"][0].get("messages"), list),
+          str(type(bexp.get("branches"))))
+
     # character generator: a concept -> drafted card fields
     gj = client.post("/api/generate_character",
                      json={"concept": "a fire mage", "model": "mistral-nemo:12b"}).json()
@@ -601,7 +706,8 @@ def main():
     for fn in [test_samplers, test_strip_think, test_substitute, test_examples,
                test_lorebook, test_assemble_order_and_budget, test_splice_depth,
                test_macro_resolution, test_depth_zero_and_est, test_cards_hardening,
-               test_cards, test_rag, test_paper_features, test_storage_atomic, test_storage_id_safety, test_integration]:
+               test_cards, test_rag, test_paper_features, test_ban_phrases,
+               test_storage_atomic, test_storage_id_safety, test_integration]:
         try:
             fn()
         except Exception as e:

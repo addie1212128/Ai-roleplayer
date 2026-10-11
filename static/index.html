@@ -82,7 +82,9 @@
         <div class="header-actions">
           <span id="ctx-meter" class="ctx-meter hidden" title="Prompt tokens used of context window">ctx —</span>
           <button id="theme-btn" class="ghost" title="Theme: system / dark / light">🌗 Auto</button>
+          <button id="shortcuts-btn" class="ghost" title="Keyboard shortcuts">⌨️</button>
           <button id="tts-btn" class="ghost" title="Read replies aloud">🔈 Off</button>
+          <button id="branch-btn" class="ghost hidden" title="Branches — save & restore alternate timelines">🌿</button>
           <button id="settings-btn" class="ghost hidden" title="Story settings">⚙ Settings</button>
           <button id="edit-active-char" class="ghost hidden">Edit character</button>
         </div>
@@ -209,6 +211,14 @@
         <label class="field"><span>Relationships</span><textarea id="c-relationships" rows="2"></textarea></label>
         <label class="field"><span>Living situation</span><input id="c-living" type="text" /></label>
       </details>
+      <details>
+        <summary>Default generation settings (optional) — this character's own creativity &amp; length</summary>
+        <p class="hint">Used as this character's defaults when a story doesn't set its own. Leave blank to use the model's preset.</p>
+        <div class="row">
+          <label class="field" style="flex:1"><span>Temperature</span><input id="c-def-temp" type="number" step="0.05" min="0" max="3" placeholder="e.g. 0.9" /></label>
+          <label class="field" style="flex:1"><span>Max reply length (num_predict)</span><input id="c-def-pred" type="number" step="32" min="16" max="8192" placeholder="e.g. 512" /></label>
+        </div>
+      </details>
       <div class="modal-actions">
         <button id="char-delete" class="danger hidden">Delete</button>
         <button id="char-export" class="ghost hidden">Export card</button>
@@ -233,6 +243,15 @@
           <select id="s-persona"><option value="">None</option></select>
         </label>
       </div>
+      <div class="row" style="align-items:flex-end">
+        <label class="field" style="flex:1">
+          <span>Sampler preset <em>(load a saved feel)</em></span>
+          <select id="s-preset-list"><option value="">— choose —</option></select>
+        </label>
+        <input id="s-preset-name" type="text" placeholder="Save current as…" style="flex:1.2" />
+        <button id="s-preset-save" type="button" class="ghost" title="Save the sliders below as a reusable preset">Save</button>
+        <button id="s-preset-del" type="button" class="ghost" title="Delete the selected preset">Delete</button>
+      </div>
       <label class="field">
         <span>Creativity <output id="s-temp-val"></output> <em>(temperature)</em></span>
         <input id="s-temp" type="range" min="0.3" max="1.6" step="0.05" />
@@ -252,6 +271,7 @@
       <p class="hint">RAG surfaces relevant older moments via embeddings. Pull the model first: <code>ollama pull nomic-embed-text</code>. Leave off if unsure.</p>
       <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-inner" type="checkbox" style="width:auto" /> Inner monologue — characters show private ((thoughts))</label>
       <label class="field"><span>Scene <em>(where / when / who's present — set once for this story)</em></span><textarea id="s-scene" rows="2"></textarea></label>
+      <label class="field"><span>Banned words &amp; phrases <em>(one per line — the AI rewrites around these; great for killing clichés)</em></span><textarea id="s-ban" rows="3" placeholder="shiver down the spine&#10;barely above a whisper&#10;eyes sparkling with mischief"></textarea></label>
       <details>
         <summary>Advanced samplers</summary>
         <div class="row">
@@ -299,6 +319,20 @@
         <button id="group-cancel" class="ghost">Cancel</button>
         <button id="group-create" class="primary">Start scene</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Branches (saved timelines) -->
+  <div id="branch-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Branches — alternate timelines</h3>
+      <p class="hint">Save the current story as a branch, keep playing, then restore any saved branch to explore a different path. Restoring is safe — your live timeline is auto-saved first.</p>
+      <div class="gen-row">
+        <input id="branch-name" type="text" placeholder="Name this timeline (e.g. “before the betrayal”)…" />
+        <button id="branch-save" type="button" class="primary">Save current</button>
+      </div>
+      <div id="branch-list" class="list"></div>
+      <div class="modal-actions"><span class="spacer"></span><button id="branch-cancel" class="ghost">Close</button></div>
     </div>
   </div>
 
