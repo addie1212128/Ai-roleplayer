@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -436,8 +437,12 @@ async def export_character(cid: str):
         raise HTTPException(404, "Character not found")
     card = cards.card_from_character(char)
     fname = (char.get("name") or "character").replace(" ", "_")
+    # HTTP headers are Latin-1; a non-ASCII or emoji name (common on imported
+    # cards) would raise. Send an ASCII fallback + an RFC 5987 UTF-8 filename*.
+    ascii_name = "".join(c for c in fname if c.isascii() and c not in '"\\') or "character"
     return JSONResponse(card, headers={
-        "Content-Disposition": f'attachment; filename="{fname}.json"'})
+        "Content-Disposition":
+            f"attachment; filename=\"{ascii_name}.json\"; filename*=UTF-8''{quote(fname)}.json"})
 
 
 # --- stories ------------------------------------------------------------------
@@ -482,7 +487,9 @@ async def update_story_meta(sid: str, meta: StoryMeta):
         story = storage.get_story(sid)
         if not story:
             raise HTTPException(404, "Story not found")
-        patch = {k: v for k, v in meta.model_dump().items() if v is not None}
+        # exclude_unset so a client can explicitly clear persona_id/lorebook_id
+        # (sent as null) while omitted fields stay untouched.
+        patch = meta.model_dump(exclude_unset=True)
         story.update(patch)
         return storage.save_story(story)
 

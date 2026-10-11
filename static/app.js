@@ -185,6 +185,7 @@ async function chatAction(action, userText) {
   state.abort = new AbortController();
   let full = "";
   let errorMsg = null;
+  let aborted = false;
 
   try {
     const resp = await fetch("/api/chat", {
@@ -210,15 +211,17 @@ async function chatAction(action, userText) {
       }
     }
   } catch (e) {
-    if (e.name !== "AbortError") { errorMsg = e.message; tmpBubble.innerHTML = formatContent("⚠️ " + e.message); }
+    if (e.name === "AbortError") aborted = true;
+    else { errorMsg = e.message; tmpBubble.innerHTML = formatContent("⚠️ " + e.message); }
   } finally {
     state.streaming = false; state.abort = null; toggleSendStop(false);
     await reloadStory();          // re-sync from the server (source of truth)
     refreshStories();
-    if (errorMsg) {
-      showToast("⚠️ " + errorMsg);
-      // The server doesn't persist a failed send, so give the user their text back.
-      if (action === "send" && userText) { const inp = $("#input"); inp.value = userText; inp.dispatchEvent(new Event("input")); }
+    if (errorMsg) showToast("⚠️ " + errorMsg);
+    // The server persists nothing on a failed OR stopped send, so give the
+    // user their typed text back either way.
+    if ((errorMsg || aborted) && action === "send" && userText) {
+      const inp = $("#input"); inp.value = userText; inp.dispatchEvent(new Event("input"));
     }
   }
 }

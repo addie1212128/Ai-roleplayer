@@ -4,7 +4,9 @@ Run:  python tests/browser_test.py
 Drives the real page in Chromium: start a story, send a message, see the reply
 stream in, generate a swipe, open settings. Fails on any JS console error.
 """
+import glob
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -14,7 +16,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CHROME = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
+
+def _detect_chrome():
+    """$CHROME_PATH wins; else a pre-installed Playwright Chromium if present;
+    else None, which makes Playwright use its own managed browser."""
+    if os.environ.get("CHROME_PATH"):
+        return os.environ["CHROME_PATH"]
+    hits = sorted(glob.glob("/opt/pw-browsers/chromium-*/chrome-linux/chrome"))
+    return hits[-1] if hits else None
+
+
+CHROME = _detect_chrome()
 FAILED = []
 
 
@@ -96,7 +108,7 @@ def main():
     from playwright.sync_api import sync_playwright
     errors = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+        browser = p.chromium.launch(executable_path=CHROME or None, args=["--no-sandbox"])
         page = browser.new_page()
         page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
         page.on("pageerror", lambda e: errors.append(str(e)))
@@ -145,7 +157,7 @@ def main():
         check("UI: permanent-token badge computed", "tokens" in page.inner_text("#perm-tokens"))
         page.click("#char-cancel")
 
-        page.screenshot(path=str(ROOT / ".." / "scratchpad_shot.png") if False else "/tmp/claude-0/-home-user-Ai-roleplayer/ada9e189-d676-5c76-a939-7e62d951e2df/scratchpad/ui.png", full_page=True)
+        page.screenshot(path=str(TMP / "ui.png"), full_page=True)
         browser.close()
 
     check("UI: no JS console errors", not errors, str(errors))

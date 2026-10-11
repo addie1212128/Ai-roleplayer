@@ -9,11 +9,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
+
+# IDs become filenames, so restrict them to a safe charset. This blocks path
+# traversal (e.g. a client-supplied id of "../../tmp/x") on every store.
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _safe_id(oid) -> bool:
+    return isinstance(oid, str) and _ID_RE.match(oid) is not None
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
@@ -64,6 +73,35 @@ def _list(dir_: Path) -> list[dict]:
     return [o for f in sorted(dir_.glob("*.json")) if (o := _read(f))]
 
 
+# Generic, id-validated document CRUD shared by every store.
+
+def _doc_get(dir_: Path, oid) -> Optional[dict]:
+    if not _safe_id(oid):
+        return None
+    return _read(dir_ / f"{oid}.json")
+
+
+def _doc_save(dir_: Path, doc: dict) -> dict:
+    # A missing OR unsafe id is replaced with a fresh one, so a client can
+    # never steer the write path outside its store.
+    if not _safe_id(doc.get("id")):
+        doc["id"] = new_id()
+        doc["created"] = time.time()
+    doc["updated"] = time.time()
+    _write(dir_ / f"{doc['id']}.json", doc)
+    return doc
+
+
+def _doc_delete(dir_: Path, oid) -> bool:
+    if not _safe_id(oid):
+        return False
+    f = dir_ / f"{oid}.json"
+    if f.exists():
+        f.unlink()
+        return True
+    return False
+
+
 # ----- characters -------------------------------------------------------------
 
 def list_characters() -> list[dict]:
@@ -73,25 +111,15 @@ def list_characters() -> list[dict]:
 
 
 def get_character(cid: str) -> Optional[dict]:
-    return _read(CHAR_DIR / f"{cid}.json")
+    return _doc_get(CHAR_DIR, cid)
 
 
 def save_character(char: dict) -> dict:
-    _ensure_dirs()
-    if not char.get("id"):
-        char["id"] = new_id()
-        char["created"] = time.time()
-    char["updated"] = time.time()
-    _write(CHAR_DIR / f"{char['id']}.json", char)
-    return char
+    return _doc_save(CHAR_DIR, char)
 
 
 def delete_character(cid: str) -> bool:
-    f = CHAR_DIR / f"{cid}.json"
-    if f.exists():
-        f.unlink()
-        return True
-    return False
+    return _doc_delete(CHAR_DIR, cid)
 
 
 # ----- stories ----------------------------------------------------------------
@@ -113,25 +141,15 @@ def list_stories() -> list[dict]:
 
 
 def get_story(sid: str) -> Optional[dict]:
-    return _read(STORY_DIR / f"{sid}.json")
+    return _doc_get(STORY_DIR, sid)
 
 
 def save_story(story: dict) -> dict:
-    _ensure_dirs()
-    if not story.get("id"):
-        story["id"] = new_id()
-        story["created"] = time.time()
-    story["updated"] = time.time()
-    _write(STORY_DIR / f"{story['id']}.json", story)
-    return story
+    return _doc_save(STORY_DIR, story)
 
 
 def delete_story(sid: str) -> bool:
-    f = STORY_DIR / f"{sid}.json"
-    if f.exists():
-        f.unlink()
-        return True
-    return False
+    return _doc_delete(STORY_DIR, sid)
 
 
 # ----- lorebooks --------------------------------------------------------------
@@ -143,25 +161,15 @@ def list_lorebooks() -> list[dict]:
 
 
 def get_lorebook(bid: str) -> Optional[dict]:
-    return _read(LORE_DIR / f"{bid}.json")
+    return _doc_get(LORE_DIR, bid)
 
 
 def save_lorebook(book: dict) -> dict:
-    _ensure_dirs()
-    if not book.get("id"):
-        book["id"] = new_id()
-        book["created"] = time.time()
-    book["updated"] = time.time()
-    _write(LORE_DIR / f"{book['id']}.json", book)
-    return book
+    return _doc_save(LORE_DIR, book)
 
 
 def delete_lorebook(bid: str) -> bool:
-    f = LORE_DIR / f"{bid}.json"
-    if f.exists():
-        f.unlink()
-        return True
-    return False
+    return _doc_delete(LORE_DIR, bid)
 
 
 # ----- personas ---------------------------------------------------------------
@@ -171,22 +179,12 @@ def list_personas() -> list[dict]:
 
 
 def get_persona(pid: str) -> Optional[dict]:
-    return _read(PERSONA_DIR / f"{pid}.json")
+    return _doc_get(PERSONA_DIR, pid)
 
 
 def save_persona(persona: dict) -> dict:
-    _ensure_dirs()
-    if not persona.get("id"):
-        persona["id"] = new_id()
-        persona["created"] = time.time()
-    persona["updated"] = time.time()
-    _write(PERSONA_DIR / f"{persona['id']}.json", persona)
-    return persona
+    return _doc_save(PERSONA_DIR, persona)
 
 
 def delete_persona(pid: str) -> bool:
-    f = PERSONA_DIR / f"{pid}.json"
-    if f.exists():
-        f.unlink()
-        return True
-    return False
+    return _doc_delete(PERSONA_DIR, pid)

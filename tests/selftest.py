@@ -62,6 +62,17 @@ def test_strip_think():
 def test_substitute():
     out = context.substitute("Hi {{user}}, I am {{char}}.", "Aria", "Sam")
     check("macro substitution", out == "Hi Sam, I am Aria.")
+    # single pass: a name containing a macro token must not be re-substituted
+    out2 = context.substitute("{{char}} and {{user}}", "{{user}}", "Bob")
+    check("substitute single-pass (no re-substitution)", out2 == "{{user}} and Bob", out2)
+
+
+def test_storage_id_safety():
+    saved = storage.save_persona({"id": "../../evil", "name": "n"})
+    check("storage: unsafe id regenerated on save", storage._safe_id(saved["id"]))
+    check("storage: get rejects traversal id", storage.get_persona("../../evil") is None)
+    check("storage: delete rejects traversal id", storage.delete_persona("../../evil") is False)
+    check("storage: no file escaped the store", not (storage.PERSONA_DIR.parent.parent / "evil.json").exists())
 
 
 def test_examples():
@@ -154,6 +165,14 @@ def test_cards():
     check("card: mes_example -> example_dialogue", "hello" in char["example_dialogue"])
     lb = cards.lorebook_from_character_book(parsed["character_book"], "Vale lore")
     check("card: character_book -> lorebook", lb["entries"][0]["keys"] == ["ship"])
+
+    # untrusted character_book with wrong field types must normalize, not crash
+    book = {"scan_depth": "bad", "entries": [{"keys": "castle", "content": 123, "depth": "oops"}]}
+    lb2 = cards.lorebook_from_character_book(book, "B")
+    check("card: string key -> single-element list", lb2["entries"][0]["keys"] == ["castle"])
+    check("card: non-string content coerced", lb2["entries"][0]["content"] == "123")
+    check("card: bad depth -> 4", lb2["entries"][0]["depth"] == 4)
+    check("card: bad scanDepth -> 4", lb2["scanDepth"] == 4)
 
     # PNG round trip
     png = _make_png_with_card(v2)
@@ -352,6 +371,18 @@ def test_integration():
     check("api: failed send leaves no orphan user turn", len(after2) == 3, f"len={len(after2)}")
     _fake_ctl["empty"] = False
 
+    # export with a non-ASCII name must not 500 (Latin-1 header fix)
+    jp = client.post("/api/characters", json={"name": "ゼロ丸", "description": "d", "greeting": "hi"}).json()
+    ex = client.get(f"/api/characters/{jp['id']}/export")
+    check("api: export non-ASCII name ok", ex.status_code == 200 and ex.json()["data"]["name"] == "ゼロ丸", str(ex.status_code))
+
+    # persona can be set and then CLEARED via explicit null (exclude_unset fix)
+    pz = client.post("/api/personas", json={"name": "Zed"}).json()
+    client.put(f"/api/stories/{story['id']}/meta", json={"persona_id": pz["id"]})
+    check("api: persona set", client.get(f"/api/stories/{story['id']}").json().get("persona_id") == pz["id"])
+    client.put(f"/api/stories/{story['id']}/meta", json={"persona_id": None})
+    check("api: persona cleared via null", client.get(f"/api/stories/{story['id']}").json().get("persona_id") is None)
+
     # edit message
     r = client.put(f"/api/stories/{story['id']}/message/1", json={"content": "I warm my hands."})
     check("api: edit message", client.get(f"/api/stories/{story['id']}").json()["messages"][1]["content"] == "I warm my hands.")
@@ -380,7 +411,7 @@ def main():
     for fn in [test_samplers, test_strip_think, test_substitute, test_examples,
                test_lorebook, test_assemble_order_and_budget, test_splice_depth,
                test_macro_resolution, test_depth_zero_and_est, test_cards_hardening,
-               test_cards, test_storage_atomic, test_integration]:
+               test_cards, test_storage_atomic, test_storage_id_safety, test_integration]:
         try:
             fn()
         except Exception as e:

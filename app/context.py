@@ -44,14 +44,18 @@ def _msgs_tokens(msgs: list[dict]) -> int:
 # macros
 # ---------------------------------------------------------------------------
 
+_MACRO_RE = re.compile(r"\{\{char\}\}|\{\{user\}\}|<BOT>|<USER>")
+
+
 def substitute(text: str, char_name: str, user_name: str) -> str:
     if not text:
         return text or ""
-    return (text
-            .replace("{{char}}", char_name or "the character")
-            .replace("{{user}}", user_name or "You")
-            .replace("<BOT>", char_name or "the character")
-            .replace("<USER>", user_name or "You"))
+    # One pass over the original text so a macro appearing inside a replacement
+    # value (e.g. a character literally named "{{user}}") is not re-substituted.
+    c = char_name or "the character"
+    u = user_name or "You"
+    table = {"{{char}}": c, "<BOT>": c, "{{user}}": u, "<USER>": u}
+    return _MACRO_RE.sub(lambda m: table[m.group(0)], text)
 
 
 # ---------------------------------------------------------------------------

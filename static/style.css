@@ -170,7 +170,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 820px) {
-  #app { grid-template-columns: 1fr; }
-  #sidebar { position: fixed; z-index: 40; width: 280px; height: 100vh; }
+  /* Stack the sidebar above the chat instead of overlaying it (no toggle needed). */
+  #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  #sidebar { max-height: 42vh; border-right: none; border-bottom: 1px solid var(--border); }
   .msg { max-width: 100%; }
 }

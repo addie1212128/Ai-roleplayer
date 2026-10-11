@@ -48,6 +48,18 @@ def _as_int(v, default):
         return default
 
 
+def _str_list(v):
+    """Coerce an untrusted keys value into a list of trimmed strings.
+    A bare string becomes a one-element list (not split into characters)."""
+    if isinstance(v, str):
+        items = [v]
+    elif isinstance(v, list):
+        items = v
+    else:
+        return []
+    return [str(x).strip() for x in items if str(x).strip()]
+
+
 # ---------------------------------------------------------------------------
 # PNG text-chunk extraction
 # ---------------------------------------------------------------------------
@@ -182,22 +194,22 @@ def lorebook_from_character_book(book: dict, name: str) -> Optional[dict]:
         if not isinstance(e, dict):
             continue
         entries.append({
-            "keys": e.get("keys", []) or e.get("key", []) or [],
-            "keysecondary": e.get("secondary_keys", []) or e.get("keysecondary", []) or [],
-            "content": e.get("content", "") or "",
+            "keys": _str_list(e.get("keys") or e.get("key")),
+            "keysecondary": _str_list(e.get("secondary_keys") or e.get("keysecondary")),
+            "content": str(e.get("content") or ""),
             "constant": bool(e.get("constant", False)),
             "selective": bool(e.get("selective", False)),
             "selectiveLogic": "AND_ANY",
             "order": _as_int(e.get("insertion_order", e.get("order", 100)), 100),
             "position": "before" if (e.get("position") in (None, "before_char", 0, "before")) else "after",
-            "depth": e.get("depth", 4),
+            "depth": _as_int(e.get("depth", 4), 4),
             "matchWholeWords": True,
-            "enabled": e.get("enabled", True),
+            "enabled": bool(e.get("enabled", True)),
         })
     return {
         "name": name or book.get("name") or "Imported Lorebook",
-        "scanDepth": book.get("scan_depth", 4) or 4,
-        "tokenBudget": book.get("token_budget"),
+        "scanDepth": _as_int(book.get("scan_depth", 4), 4) or 4,
+        "tokenBudget": _as_int(book.get("token_budget"), None),
         "entries": entries,
     }
 
