@@ -30,6 +30,11 @@ import rp_common as rp  # noqa: E402  (stdlib-only; safe before the heavy import
 
 
 def run(args) -> int:
+    # Fail fast on a missing dataset BEFORE the multi-minute 12B load.
+    if not Path(args.data).exists():
+        print(f"{args.data} not found — run prepare_data.py first "
+              "(or pass --data <path>).")
+        return 1
     # Unsloth MUST be imported before trl/transformers/peft.
     try:
         from unsloth import FastLanguageModel
@@ -166,6 +171,7 @@ def _verify_masking(trainer, tokenizer) -> None:
 
 
 def main() -> int:
+    rp.safe_stdout()
     repo_root = Path(__file__).resolve().parent.parent
     out_dir = repo_root / "training" / "outputs"
     ap = argparse.ArgumentParser(description="QLoRA SFT of a roleplay model with Unsloth.")

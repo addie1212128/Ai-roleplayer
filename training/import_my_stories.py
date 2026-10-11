@@ -48,8 +48,38 @@ def _load_dir(d: Path) -> dict[str, dict]:
 def _is_group(messages: list[dict]) -> bool:
     """A story is a group scene if >1 distinct assistant speaker name appears."""
     names = {str(m.get("name")).strip() for m in messages
-             if m.get("role") == "assistant" and m.get("name")}
+             if isinstance(m, dict) and m.get("role") == "assistant" and m.get("name")}
     return len(names) > 1
+
+
+def _normalize_prompt(msgs: list[dict]) -> list[dict] | None:
+    """Make a DPO prompt template-valid: optional leading system, then strictly
+    alternating turns ENDING on a user turn.
+
+    Stories open with the character's greeting and group scenes interleave
+    speakers, so the raw prompt can be [system, assistant(greeting), user, ...]
+    or end on a previous speaker's assistant turn — both of which strict native
+    chat templates (Mistral) reject. We drop the leading greeting, merge
+    consecutive same-role turns, and trim trailing assistant turns so the
+    completion follows a user turn. Returns None if no user turn remains.
+    """
+    system = [m for m in msgs[:1] if m.get("role") == "system"]
+    rest = msgs[len(system):]
+    first_user = next((i for i, m in enumerate(rest) if m["role"] == "user"), None)
+    if first_user is None:
+        return None
+    rest = rest[first_user:]
+    merged: list[dict] = []
+    for m in rest:
+        if merged and merged[-1]["role"] == m["role"]:   # collapse consecutive same-role
+            merged[-1]["content"] = merged[-1]["content"] + "\n\n" + m["content"]
+        else:
+            merged.append(dict(m))
+    while merged and merged[-1]["role"] == "assistant":   # end on a user turn
+        merged.pop()
+    if not merged:
+        return None
+    return system + merged
 
 
 def _assistant_content(m: dict, group: bool) -> str:
@@ -109,16 +139,17 @@ def convert_story(story: dict, characters: dict, personas: dict,
             # DPO pair(s) from this turn's swipes, using the conversation SO FAR
             # as the prompt. Needs at least one user turn in the prompt.
             chosen, rejected = _swipe_texts(m, group)
-            if chosen and rejected and any(t["role"] == "user" for t in convo):
-                prompt_msgs = [dict(t) for t in convo]
-                for rej in rejected:
-                    dpo.append({
-                        "prompt": prompt_msgs,
-                        "chosen": [{"role": "assistant", "content": chosen}],
-                        "rejected": [{"role": "assistant", "content": rej}],
-                        "source": "my_stories_swipes",
-                        "story_id": story.get("id"),
-                    })
+            if chosen and rejected:
+                prompt_msgs = _normalize_prompt(rp.clean_messages(convo))
+                if prompt_msgs:   # None if there is no user turn to anchor the prompt
+                    for rej in rejected:
+                        dpo.append({
+                            "prompt": prompt_msgs,
+                            "chosen": [{"role": "assistant", "content": chosen}],
+                            "rejected": [{"role": "assistant", "content": rej}],
+                            "source": "my_stories_swipes",
+                            "story_id": story.get("id"),
+                        })
             content = _assistant_content(m, group)
             if content:
                 convo.append({"role": "assistant", "content": content})
@@ -143,6 +174,7 @@ def convert_story(story: dict, characters: dict, personas: dict,
 
 
 def main() -> int:
+    rp.safe_stdout()
     repo_root = Path(__file__).resolve().parent.parent
     ap = argparse.ArgumentParser(description="Convert AI Roleplayer stories into SFT + DPO data.")
     ap.add_argument("--data-dir", default=str(repo_root / "data"),

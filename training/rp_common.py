@@ -18,8 +18,22 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
+
+
+def safe_stdout() -> None:
+    """Make stdout tolerant of non-ASCII (✅, ⚠, →) on Windows.
+
+    Native Windows encodes redirected stdout with cp1252, so an emoji in a
+    print() raises UnicodeEncodeError — which can make a SUCCESSFUL run (adapter
+    already saved) look like a crash. Call this first thing in each entrypoint.
+    """
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # --- chat templates -----------------------------------------------------------
 # Unsloth's get_chat_template() name  ->  the train_on_responses_only markers
@@ -63,7 +77,10 @@ MODEL_PRESETS: dict[str, dict] = {
     # keeper (recommended): 12B, Apache-2.0, 128k context, native Tekken [INST]
     "nemo-instruct": {
         "model_name": "unsloth/Mistral-Nemo-Instruct-2407",
-        "merge_base": "mistralai/Mistral-Nemo-Base-2407",
+        # merge_base MUST be the SAME weights training froze (the Instruct model),
+        # not the raw Base — merging Instruct-trained LoRA deltas into Base discards
+        # all instruction tuning and inherits Base's untrained EOS (silent breakage).
+        "merge_base": "mistralai/Mistral-Nemo-Instruct-2407",
         "template": "mistral",
         "ollama_family": "mistral-nemo",
     },
@@ -88,11 +105,13 @@ MODEL_PRESETS: dict[str, dict] = {
         "template": "qwen-2.5",
         "ollama_family": "qwen2.5",
     },
-    # end-of-month dual-GPU keeper (train via Axolotl FSDP2, not this script)
+    # end-of-month dual-GPU keeper (train via Axolotl FSDP2, not this script).
+    # Uses ChatML to match axolotl_mistral_small_24b_fsdp2.yaml (chat_template: chatml);
+    # export with `--template chatml --no-inherit` so the served template matches training.
     "mistral-small-24b": {
         "model_name": "unsloth/Mistral-Small-24B-Base-2501",
         "merge_base": "mistralai/Mistral-Small-24B-Base-2501",
-        "template": "mistral",
+        "template": "chatml",
         "ollama_family": "mistral-small",
     },
 }

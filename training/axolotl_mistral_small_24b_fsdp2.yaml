@@ -19,7 +19,8 @@
 #       training/axolotl_mistral_small_24b_fsdp2.yaml
 #   axolotl merge-lora training/axolotl_mistral_small_24b_fsdp2.yaml \
 #       --lora-model-dir ./outputs/mistral-small-24b-qlora-fsdp
-#   # then GGUF/Ollama: training/export_gguf.py --merged-dir <merged> --template mistral --name my-roleplayer-24b
+#   # then GGUF/Ollama (serve with the SAME ChatML template this trains with):
+#   #   training/export_gguf.py --merged-dir <merged> --template chatml --no-inherit --name my-roleplayer-24b
 
 base_model: mistralai/Mistral-Small-24B-Base-2501   # text model (MistralForCausalLM); NOT the 3.1/2503 multimodal
 model_type: AutoModelForCausalLM
@@ -42,7 +43,9 @@ datasets:
     type: chat_template
     field_messages: messages
     roles_to_train: ["assistant"]      # response-only masking (the modern Axolotl default)
-chat_template: chatml                    # must match the model you actually train; Nemo/Mistral native is tekken
+chat_template: chatml                    # train AND serve with ChatML (export: --template chatml --no-inherit).
+                                         # Mistral's native format is Tekken [INST]; this toolkit standardizes
+                                         # the 24B path on ChatML so training and the served template match.
 dataset_prepared_path: last_run_prepared
 output_dir: ./outputs/mistral-small-24b-qlora-fsdp
 

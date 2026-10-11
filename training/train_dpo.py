@@ -50,6 +50,7 @@ def run(args) -> int:
     PatchDPOTrainer()                       # BEFORE building any DPO/ORPO trainer
     import torch  # noqa: F401
     from datasets import load_dataset
+    from unsloth.chat_templates import get_chat_template
 
     data_path = Path(args.data)
     if not data_path.exists():
@@ -79,6 +80,18 @@ def run(args) -> int:
         random_state=3407,
     )
 
+    # Render preference data with the SAME (lenient) template SFT used, not the
+    # raw native one — otherwise conversational prompt/chosen/rejected can trip
+    # the strict alternation check. Smoke-test one pair before the long run.
+    tokenizer = get_chat_template(tokenizer, chat_template=args.template)
+    try:
+        ex = dataset[0]
+        tokenizer.apply_chat_template(ex["prompt"] + ex["chosen"], tokenize=False)
+    except Exception as e:
+        print(f"ABORT: a preference pair failed to render with the '{args.template}' "
+              f"template ({e}). Check --template and that prompts alternate / end on a user turn.")
+        return 1
+
     common = dict(
         output_dir=args.out,
         beta=args.beta,
@@ -93,6 +106,7 @@ def run(args) -> int:
         logging_steps=1,
         seed=3407,
         bf16=True,                          # avoid fp16 for preference training
+        report_to="none",                   # don't auto-upload to wandb/comet/mlflow if installed
     )
 
     if args.method == "dpo":
@@ -118,7 +132,10 @@ def run(args) -> int:
     model.save_pretrained(adapter_out)
     tokenizer.save_pretrained(adapter_out)
     print(f"\n✅ {args.method.upper()} adapter saved -> {adapter_out}")
-    print("Export it the same way as an SFT adapter (training/export_gguf.py).")
+    print("Export it — but --base MUST be the merged SFT model this was trained on")
+    print(f"(i.e. --model above, {args.model}), NOT a raw HF base id:")
+    print(f"  python training/export_gguf.py --adapter {adapter_out} "
+          f"--base {args.model} --template {args.template} --name my-roleplayer")
     return 0
 
 
@@ -133,6 +150,8 @@ def main() -> int:
                     help="{prompt,chosen,rejected} JSONL.")
     ap.add_argument("--out", default=str(out_dir))
     ap.add_argument("--adapter-out", default=None)
+    ap.add_argument("--template", default="mistral",
+                    help="Chat template family (match the model you trained: mistral/chatml/...).")
     ap.add_argument("--max-seq-len", type=int, default=2048)
     ap.add_argument("--lora-r", type=int, default=32)
     ap.add_argument("--lora-alpha", type=int, default=32)
@@ -142,6 +161,7 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=5e-6, help="Preference LR is much lower than SFT.")
     ap.add_argument("--epochs", type=float, default=1.0)
     args = ap.parse_args()
+    rp.safe_stdout()
     return run(args)
 
 

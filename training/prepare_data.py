@@ -165,9 +165,14 @@ def build(args) -> int:
     if args.my_stories:
         p = Path(args.my_stories)
         if p.exists():
-            mine = [{"messages": rec.get("messages", []), "source": "my_stories",
-                     "capability": "roleplay"}
-                    for rec in rp.read_jsonl(p) if rp.messages_valid(rec.get("messages", []))]
+            # Normalize like every other source (a hand-edited/third-party JSONL
+            # may have turns missing role/content) so downstream never crashes.
+            mine = []
+            for rec in rp.read_jsonl(p):
+                msgs = rp.clean_messages(rec.get("messages", []))
+                if rp.messages_valid(msgs):
+                    mine.append({"messages": msgs, "source": "my_stories",
+                                 "capability": "roleplay"})
             rp_records += mine
             print(f"• Your stories: {len(mine)} conversations from {p}")
         else:
@@ -237,14 +242,15 @@ def _minhash_dedup(records: list[dict], threshold: float) -> list[dict]:
     except ImportError:
         print("    (datasketch not installed — using slower pure-Python near-dedup)")
         return rp.dedup_near(records, threshold=threshold)
-    import re as _re
     lsh = MinHashLSH(threshold=threshold, num_perm=128)
     kept: list[dict] = []
     for i, r in enumerate(records):
-        toks = _re.findall(r"\w+", rp.assistant_text(r["messages"]).lower())
+        # Use the SAME 5-word shingles as rp.dedup_near so both paths implement
+        # one similarity at one threshold (unigram sets would silently dedup
+        # harder — collapsing reordered/same-vocabulary rows — above the cap).
         mh = MinHash(num_perm=128)
-        for t in set(toks):
-            mh.update(t.encode("utf-8"))
+        for sh in rp._shingles(rp.assistant_text(r["messages"])):
+            mh.update(sh.encode("utf-8"))
         if lsh.query(mh):
             continue
         lsh.insert(f"r{i}", mh)
@@ -308,6 +314,7 @@ def main() -> int:
                     help="Above this many rows, use MinHash-LSH instead of pure near-dedup.")
     ap.add_argument("--seed", type=int, default=3407)
     args = ap.parse_args()
+    rp.safe_stdout()
     return build(args)
 
 

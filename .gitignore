@@ -11,7 +11,11 @@ data/
 # Training toolkit outputs — generated datasets, checkpoints, GGUFs (large/local)
 training/data/
 training/outputs/
+# Axolotl (24B path) runs from the repo root and writes these there
+/outputs/
+/last_run_prepared/
 *.gguf
+*.safetensors
 
 # OS / editor noise
 .DS_Store

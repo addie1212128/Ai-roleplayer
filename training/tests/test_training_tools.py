@@ -125,8 +125,29 @@ def test_convert_single():
     check(len(dpo) == 2, "two DPO pairs from the 3-swipe turn (chosen vs each alternate)")
     check(all(p["chosen"][0]["content"] == "Hello there." for p in dpo), "chosen = selected swipe")
     check({p["rejected"][0]["content"] for p in dpo} == {"Hey!", "Yo."}, "rejected = the alternates")
-    check(all(any(t["role"] == "user" for t in p["prompt"]) for p in dpo),
-          "DPO prompt contains a user turn (greeting-only turn produced none)")
+    pr = dpo[0]["prompt"]
+    check(pr[-1]["role"] == "user", "DPO prompt ends on a user turn (template-valid)")
+    check(not any("Welcome!" in t["content"] for t in pr),
+          "leading assistant greeting dropped from the DPO prompt")
+
+
+def test_normalize_prompt():
+    print("_normalize_prompt (DPO prompts are template-valid)")
+    sys_u = {"role": "system", "content": "s"}
+    g = {"role": "assistant", "content": "greeting"}
+    u = {"role": "user", "content": "u1"}
+    a = {"role": "assistant", "content": "a1"}
+    # leading greeting dropped, trailing assistant trimmed
+    out = ims._normalize_prompt([sys_u, g, u, a])
+    check(out == [sys_u, u], "drops leading greeting + trailing assistant")
+    # consecutive assistants merged, then trailing trimmed -> ends on user
+    out2 = ims._normalize_prompt([sys_u, u, a, {"role": "assistant", "content": "a2"}])
+    check(out2 == [sys_u, u], "merges consecutive assistants then trims to the user")
+    # alternating prompt ending on user is preserved
+    keep = [u, a, {"role": "user", "content": "u2"}]
+    check(ims._normalize_prompt(keep) == keep, "keeps a valid alternating prompt")
+    # no user turn -> None
+    check(ims._normalize_prompt([sys_u, g]) is None, "returns None when there is no user turn")
 
 
 def test_convert_group():
@@ -164,8 +185,8 @@ def test_convert_filters():
 
 def main() -> int:
     for t in (test_clean_messages, test_messages_valid, test_sharegpt, test_slop,
-              test_dedup, test_system_prompt, test_convert_single, test_convert_group,
-              test_convert_filters):
+              test_dedup, test_system_prompt, test_normalize_prompt, test_convert_single,
+              test_convert_group, test_convert_filters):
         t()
     print()
     if _failures:

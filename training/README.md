@@ -30,7 +30,7 @@ python training/train_sft.py
 # 4) export to GGUF + register with Ollama -> shows up in the app's model dropdown
 python training/export_gguf.py \
     --adapter training/outputs/nemo-instruct-lora \
-    --base mistralai/Mistral-Nemo-Base-2407 \
+    --base mistralai/Mistral-Nemo-Instruct-2407 \
     --template mistral --llama-cpp-dir ~/llama.cpp --name my-roleplayer
 ```
 
@@ -43,7 +43,7 @@ Then open the app, **⚙ Settings → model → `my-roleplayer`**, and play. �
 | File | Does |
 |---|---|
 | `import_my_stories.py` | 🔑 Your stories → SFT data **+ free DPO pairs** (kept swipe = *chosen*, alternates = *rejected*). Pure stdlib. |
-| `prepare_data.py` | Download + format PIPPA / LimaRP / CoSER + a teaching slice (Dolly / rotut / Open-Platypus), keep roleplay dominant, dedup, slop-filter → `data/train.jsonl`. |
+| `prepare_data.py` | Download + format PIPPA / LimaRP / CoSER + a teaching slice (Dolly / rotut / Open-Platypus), keep roleplay dominant, dedup, slop-filter → `training/data/train.jsonl`. |
 | `train_sft.py` | Unsloth QLoRA SFT. Defaults tuned for Nemo-12B on ~20 GB. |
 | `train_dpo.py` | Optional DPO/ORPO preference polish (a later stage). |
 | `export_gguf.py` | Merge → GGUF → quantize → Ollama Modelfile → `ollama create`. |
@@ -118,8 +118,8 @@ gives the Vulkan build, not CUDA.
 
 **Import your stories** (`import_my_stories.py`) — reads the app's `data/`
 folder, rebuilds each character + persona into a system prompt, and writes
-`data/my_stories_sft.jsonl` plus `data/my_stories_dpo.jsonl` (the DPO file fills
-up as you *swipe* to alternate replies in the app). A few hundred of your own
+`training/data/my_stories_sft.jsonl` plus `training/data/my_stories_dpo.jsonl`
+(the DPO file fills up as you *swipe* to alternate replies in the app). A few hundred of your own
 exchanges personalize the model more than any public set.
 
 **Prepare data** (`prepare_data.py`) — blends sources roleplay-dominant
@@ -145,10 +145,16 @@ Q5_K_M Q8_0`), writes a Modelfile, and runs `ollama create`. It even copies the
 **Polish (optional, later)** (`train_dpo.py`) — after SFT, teach preferences
 from your swipe pairs. First merge your SFT adapter, then DPO on top:
 ```bash
+# 1. merge the SFT adapter to a 16-bit folder (into the Instruct weights it trained on)
 python training/export_gguf.py --adapter training/outputs/nemo-instruct-lora \
-    --base mistralai/Mistral-Nemo-Base-2407 --merge-only          # -> ...-merged
+    --base mistralai/Mistral-Nemo-Instruct-2407 --merge-only      # -> ...-lora-merged
+# 2. DPO-polish on top of that merged SFT model
 python training/train_dpo.py --model training/outputs/nemo-instruct-lora-merged \
     --data training/data/my_stories_dpo.jsonl
+# 3. export the DPO adapter — --base MUST be the merged SFT model it trained on, NOT an HF id
+python training/export_gguf.py --adapter training/outputs/dpo-lora \
+    --base training/outputs/nemo-instruct-lora-merged \
+    --template mistral --llama-cpp-dir ~/llama.cpp --name my-roleplayer
 ```
 
 **Go bigger, later** (`axolotl_mistral_small_24b_fsdp2.yaml`) — when your 32 GB

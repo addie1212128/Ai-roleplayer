@@ -101,8 +101,13 @@ def _ollama_template(family: str) -> tuple[str, list[str]] | None:
 
 
 def write_modelfile(merged_dir: Path, gguf_name: str, template: str, family: str,
-                    system: str, num_ctx: int, temperature: float) -> Path:
-    inherited = _ollama_template(family)
+                    system: str, num_ctx: int, temperature: float,
+                    inherit: bool = True) -> Path:
+    # Inheriting `ollama show --template <family>` is right only when training used
+    # that family's NATIVE template. For a model trained on a DIFFERENT template
+    # (e.g. a Mistral model trained with ChatML), pass --no-inherit so we use the
+    # matching built-in instead of the family's (wrong) native template.
+    inherited = _ollama_template(family) if inherit else None
     if inherited:
         tmpl, stops = inherited
         print(f"  using the known-good template inherited from `ollama show --template {family}`")
@@ -131,17 +136,18 @@ def write_modelfile(merged_dir: Path, gguf_name: str, template: str, family: str
 
 
 def run(args) -> int:
-    merged = Path(args.merged_dir) if args.merged_dir else Path(args.adapter).parent / (
-        Path(args.adapter).name + "-merged")
-
-    # 1) Merge (unless reusing an existing merged dir)
-    if not args.merged_dir:
+    # 1) Merge (unless reusing an existing merged dir). Validate BEFORE touching
+    #    Path(args.adapter) so a bare invocation hits the friendly message, not a
+    #    TypeError on Path(None).
+    if args.merged_dir:
+        merged = Path(args.merged_dir)
+        print(f"Reusing merged model at {merged}")
+    else:
         if not args.adapter or not args.base:
             print("Provide --adapter and --base (or --merged-dir to reuse a merge).")
             return 1
+        merged = Path(args.adapter).parent / (Path(args.adapter).name + "-merged")
         merge_adapter(args.base, args.adapter, str(merged), args.device)
-    else:
-        print(f"Reusing merged model at {merged}")
     if args.merge_only:
         print(f"\n✅ Merge complete -> {merged}  (use this as --model for train_dpo.py)")
         return 0
@@ -173,7 +179,8 @@ def run(args) -> int:
     family = args.ollama_family or (preset["ollama_family"] if preset else args.template)
     primary = produced[0]
     mf = write_modelfile(merged, primary.name, args.template, family,
-                         args.system, args.num_ctx, args.temperature)
+                         args.system, args.num_ctx, args.temperature,
+                         inherit=not args.no_inherit)
 
     if args.skip_ollama:
         print(f"\n✅ GGUF(s) ready: {', '.join(p.name for p in produced)}")
@@ -193,6 +200,7 @@ def run(args) -> int:
 
 
 def main() -> int:
+    rp.safe_stdout()
     ap = argparse.ArgumentParser(description="Merge LoRA -> GGUF -> Ollama.")
     ap.add_argument("--adapter", default=None, help="Trained LoRA adapter dir (from train_*.py).")
     ap.add_argument("--base", default=None, help="Base model HF id you fine-tuned.")
@@ -201,6 +209,9 @@ def main() -> int:
     ap.add_argument("--template", default="mistral", help="Chat template family (mistral/chatml/...).")
     ap.add_argument("--ollama-family", default=None,
                     help="Ollama tag to inherit the template from (default: derived from --template).")
+    ap.add_argument("--no-inherit", action="store_true",
+                    help="Don't inherit a template via `ollama show`; use the built-in for --template "
+                         "(use when the model was trained on a non-native template, e.g. ChatML on Mistral).")
     ap.add_argument("--llama-cpp-dir", default="~/llama.cpp")
     ap.add_argument("--outtype", default="f16", choices=["f16", "bf16", "f32"],
                     help="High-precision intermediate (use bf16 if the source is bf16).")
