@@ -62,6 +62,11 @@ In a terminal, grab a model. Picks for a **GPU gaming PC**, by VRAM:
 > Any chat model works — use whatever you like. Bigger = more coherent, needs
 > more VRAM. The app auto-applies a good sampler preset per model.
 
+> 🧠 **Want your *own* model?** You can fine-tune an open base model into a
+> custom roleplay (and optionally teaching) brain that plugs right back into
+> this app via Ollama. See **[TRAINING.md](TRAINING.md)** for the full,
+> honest build plan — base models, datasets, cost, and the GGUF export steps.
+
 ### 3. Install Python
 If you don't have it: **<https://www.python.org/downloads/>** (3.10+). On
 Windows, tick **"Add Python to PATH"** during install.
