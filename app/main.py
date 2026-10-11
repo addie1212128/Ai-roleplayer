@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import io
 import json
 import os
 import re
+import time
 import zipfile
 from pathlib import Path
 from typing import List, Optional
@@ -132,6 +134,10 @@ class MessageEdit(BaseModel):
 
 class SwipeSelect(BaseModel):
     swipe_id: int
+
+
+class BranchCreate(BaseModel):
+    name: Optional[str] = None
 
 
 class Lorebook(BaseModel):
@@ -334,6 +340,33 @@ async def _maybe_summarize(story: dict, model: str) -> bool:
 def _invalidate_summaries(story: dict, from_index: int) -> None:
     story["summaries"] = [s for s in story.get("summaries", [])
                           if s.get("range", [0, 0])[1] <= from_index]
+
+
+MAX_BRANCHES = 50
+
+
+def _branch_meta(b: dict) -> dict:
+    """Lightweight view of a saved branch (no message bodies)."""
+    return {"id": b.get("id"), "name": b.get("name", "Timeline"),
+            "created": b.get("created"), "auto": bool(b.get("auto")),
+            "turns": len(b.get("messages", []))}
+
+
+def _story_response(story: dict) -> dict:
+    """Story as sent to the UI: branches reduced to metadata so opening a story
+    (and the post-turn re-sync) never ships every branch's full message history.
+    The on-disk story and the JSON export keep the full branch bodies."""
+    if not story.get("branches"):
+        return story
+    out = dict(story)
+    out["branches"] = [_branch_meta(b) for b in story["branches"]]
+    return out
+
+
+def _snapshot(story: dict, name: str, auto: bool = False) -> dict:
+    return {"id": storage.new_id(), "name": name[:120], "created": time.time(),
+            "auto": auto, "messages": copy.deepcopy(story.get("messages", [])),
+            "summaries": copy.deepcopy(story.get("summaries", []))}
 
 
 # --- Ollama / models ----------------------------------------------------------
@@ -760,7 +793,7 @@ async def get_story(sid: str):
     story = storage.get_story(sid)
     if not story:
         raise HTTPException(404, "Story not found")
-    return story
+    return _story_response(story)
 
 
 @app.get("/api/stories/{sid}/export")
@@ -859,7 +892,7 @@ async def create_story(story: StoryCreate):
             m["swipe_id"] = 0
     data.setdefault("summaries", [])
     data.setdefault("authors_note", {"text": "", "depth": 4, "role": "system"})
-    return storage.save_story(data)
+    return _story_response(storage.save_story(data))
 
 
 @app.delete("/api/stories/{sid}")
@@ -880,7 +913,7 @@ async def update_story_meta(sid: str, meta: StoryMeta):
         # (sent as null) while omitted fields stay untouched.
         patch = meta.model_dump(exclude_unset=True)
         story.update(patch)
-        return storage.save_story(story)
+        return _story_response(storage.save_story(story))
 
 
 @app.put("/api/stories/{sid}/message/{idx}")
@@ -938,6 +971,66 @@ async def delete_from(sid: str, idx: int):
         _invalidate_summaries(story, idx)
         storage.save_story(story)
         return {"ok": True, "length": len(story["messages"])}
+
+
+# --- branches (saved alternate timelines) -------------------------------------
+
+@app.get("/api/stories/{sid}/branches")
+async def list_branches(sid: str):
+    story = storage.get_story(sid)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    return [_branch_meta(b) for b in story.get("branches", [])]
+
+
+@app.post("/api/stories/{sid}/branches")
+async def create_branch(sid: str, req: BranchCreate):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        branches = story.setdefault("branches", [])
+        name = (req.name or "").strip() or f"Timeline {len(branches) + 1}"
+        branch = _snapshot(story, name)
+        branches.append(branch)
+        if len(branches) > MAX_BRANCHES:        # bound file growth; drop oldest
+            del branches[0:len(branches) - MAX_BRANCHES]
+        storage.save_story(story)
+        return {"ok": True, "branch": _branch_meta(branch), "count": len(branches)}
+
+
+@app.post("/api/stories/{sid}/branches/{bid}/restore")
+async def restore_branch(sid: str, bid: str):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        branches = story.setdefault("branches", [])
+        target = next((b for b in branches if b.get("id") == bid), None)
+        if not target:
+            raise HTTPException(404, "Branch not found")
+        # Never destroy the live timeline: keep ONE rolling auto-snapshot of it
+        # so an accidental restore is always reversible.
+        branches[:] = [b for b in branches if not b.get("auto")]
+        branches.append(_snapshot(story, "⏱ Before restore (auto)", auto=True))
+        story["messages"] = copy.deepcopy(target.get("messages", []))
+        story["summaries"] = copy.deepcopy(target.get("summaries", []))
+        return _story_response(storage.save_story(story))
+
+
+@app.delete("/api/stories/{sid}/branches/{bid}")
+async def delete_branch(sid: str, bid: str):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        branches = story.get("branches", [])
+        kept = [b for b in branches if b.get("id") != bid]
+        if len(kept) == len(branches):
+            raise HTTPException(404, "Branch not found")
+        story["branches"] = kept
+        storage.save_story(story)
+        return {"ok": True}
 
 
 # --- lorebooks ----------------------------------------------------------------

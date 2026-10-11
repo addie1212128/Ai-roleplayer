@@ -52,6 +52,10 @@ const api = {
   importStory: (filename, data_b64) => jsend("/api/stories/import", "POST", { filename, data_b64 }),
   deleteStory: (id) => fetch(`/api/stories/${id}`, { method: "DELETE", headers: authH() }),
   storyMeta: (id, patch) => jsend(`/api/stories/${id}/meta`, "PUT", patch),
+  listBranches: (id) => jget(`/api/stories/${id}/branches`),
+  saveBranch: (id, name) => jsend(`/api/stories/${id}/branches`, "POST", { name }),
+  restoreBranch: (id, bid) => jsend(`/api/stories/${id}/branches/${bid}/restore`, "POST"),
+  deleteBranch: (id, bid) => fetch(`/api/stories/${id}/branches/${bid}`, { method: "DELETE", headers: authH() }),
   editMessage: (id, idx, content) => jsend(`/api/stories/${id}/message/${idx}`, "PUT", { content }),
   selectSwipe: (id, idx, swipe_id) => jsend(`/api/stories/${id}/message/${idx}/swipe`, "PUT", { swipe_id }),
   deleteFrom: (id, idx) => fetch(`/api/stories/${id}/message/${idx}`, { method: "DELETE", headers: authH() }),
@@ -222,6 +226,7 @@ function updateHeader() {
     : (char ? char.name : (state.story ? state.story.title : "Pick a character to begin"));
   const open = !!state.story;
   $("#edit-active-char").classList.toggle("hidden", !char);
+  $("#branch-btn").classList.toggle("hidden", !open);
   $("#settings-btn").classList.toggle("hidden", !open);
   $("#composer").classList.toggle("hidden", !open);
   $("#an-bar").classList.toggle("hidden", !open);
@@ -837,6 +842,55 @@ async function saveLoreFromModal() {
   await refreshLorebooks();
 }
 
+// ---------- branches (saved timelines) ----------
+async function openBranchModal() {
+  if (!state.story) return;
+  $("#branch-name").value = "";
+  await renderBranchList();
+  $("#branch-modal").classList.remove("hidden");
+  $("#branch-name").focus();
+}
+async function renderBranchList() {
+  const box = $("#branch-list"); box.innerHTML = "";
+  let list = [];
+  try { list = await api.listBranches(state.story.id); } catch { list = []; }
+  if (!list.length) { box.innerHTML = `<div class="hint">No saved branches yet. Save one above to remember this point.</div>`; return; }
+  list.slice().reverse().forEach((b) => {   // newest first
+    const when = b.created ? new Date(b.created * 1000).toLocaleString() : "";
+    box.appendChild(listItem({
+      emoji: b.auto ? "⏱" : "🌿", title: b.name, sub: `${b.turns} msgs${when ? " · " + when : ""}`,
+      onClick: () => restoreBranch(b),
+      actions: [
+        { label: "⤵", title: "Restore this timeline", fn: () => restoreBranch(b) },
+        { label: "🗑", title: "Delete branch", cls: "del", fn: async () => {
+            if (!confirm(`Delete branch “${b.name}”?`)) return;
+            await api.deleteBranch(state.story.id, b.id); await renderBranchList();
+        } },
+      ],
+    }));
+  });
+}
+async function saveBranchFromModal() {
+  if (!state.story) return;
+  try {
+    await api.saveBranch(state.story.id, $("#branch-name").value.trim());
+    $("#branch-name").value = "";
+    await renderBranchList();
+    showToast("🌿 Timeline saved");
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+async function restoreBranch(b) {
+  if (!state.story || state.streaming) return;
+  if (!confirm(`Restore “${b.name}”? Your current timeline is auto-saved first.`)) return;
+  try {
+    state.story = await api.restoreBranch(state.story.id, b.id);
+    $("#branch-modal").classList.add("hidden");
+    renderMessages(); updateHeader(); refreshStories();
+    $("#ctx-meter").classList.add("hidden");
+    showToast("🌿 Restored");
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
 // ---------- settings drawer ----------
 async function openSettings() {
   if (!state.story) return;
@@ -1066,6 +1120,13 @@ function init() {
     await api.deleteLorebook(state.editingLoreId); $("#lore-modal").classList.add("hidden"); await refreshLorebooks();
   };
   bindModal("#lore-modal", []);
+
+  // branches (saved timelines)
+  $("#branch-btn").onclick = openBranchModal;
+  $("#branch-save").onclick = saveBranchFromModal;
+  $("#branch-cancel").onclick = () => $("#branch-modal").classList.add("hidden");
+  $("#branch-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveBranchFromModal(); } });
+  bindModal("#branch-modal", []);
 
   // settings drawer
   $("#settings-btn").onclick = openSettings;

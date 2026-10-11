@@ -646,6 +646,35 @@ def test_integration():
     check("api: sampler preset gone",
           not any(p["id"] == sp["id"] for p in client.get("/api/sampler_presets").json()))
 
+    # chat branching: snapshot a timeline, diverge, restore it (non-destructively)
+    bstory = client.post("/api/stories", json={"title": "Branch", "character_id": char["id"],
+                                               "character_name": "Aria", "model": "mistral-nemo:12b",
+                                               "messages": [{"role": "assistant", "content": "start"},
+                                                            {"role": "user", "content": "u1"}]}).json()
+    bsave = client.post(f"/api/stories/{bstory['id']}/branches", json={"name": "Path A"}).json()
+    check("api: branch saved", bsave.get("ok") and bsave["branch"]["turns"] == 2 and bsave["branch"]["name"] == "Path A")
+    bid = bsave["branch"]["id"]
+    client.post("/api/chat", json={"story_id": bstory["id"], "action": "send", "user_message": "u2"})
+    after = client.get(f"/api/stories/{bstory['id']}").json()
+    check("api: timeline diverged", len(after["messages"]) == 4, str(len(after["messages"])))
+    check("api: get_story returns branch meta, not bodies",
+          bool(after.get("branches")) and "messages" not in after["branches"][0]
+          and after["branches"][0]["turns"] == 2, str(after.get("branches")))
+    restored = client.post(f"/api/stories/{bstory['id']}/branches/{bid}/restore").json()
+    check("api: restore swaps the live timeline",
+          len(restored["messages"]) == 2 and restored["messages"][-1]["content"] == "u1", str(len(restored["messages"])))
+    names = [b["name"] for b in client.get(f"/api/stories/{bstory['id']}/branches").json()]
+    check("api: restore auto-saves the prior timeline", any("Before restore" in n for n in names), str(names))
+    check("api: branch listed", any(b["id"] == bid for b in client.get(f"/api/stories/{bstory['id']}/branches").json()))
+    check("api: branch deleted", client.delete(f"/api/stories/{bstory['id']}/branches/{bid}").json().get("ok"))
+    check("api: branch gone",
+          not any(b["id"] == bid for b in client.get(f"/api/stories/{bstory['id']}/branches").json()))
+    # export keeps full branch bodies (so re-import restores them)
+    bexp = client.get(f"/api/stories/{bstory['id']}/export").json()
+    check("api: export preserves full branch bodies",
+          bool(bexp.get("branches")) and isinstance(bexp["branches"][0].get("messages"), list),
+          str(type(bexp.get("branches"))))
+
     # character generator: a concept -> drafted card fields
     gj = client.post("/api/generate_character",
                      json={"concept": "a fire mage", "model": "mistral-nemo:12b"}).json()

@@ -84,6 +84,7 @@
           <button id="theme-btn" class="ghost" title="Theme: system / dark / light">🌗 Auto</button>
           <button id="shortcuts-btn" class="ghost" title="Keyboard shortcuts">⌨️</button>
           <button id="tts-btn" class="ghost" title="Read replies aloud">🔈 Off</button>
+          <button id="branch-btn" class="ghost hidden" title="Branches — save & restore alternate timelines">🌿</button>
           <button id="settings-btn" class="ghost hidden" title="Story settings">⚙ Settings</button>
           <button id="edit-active-char" class="ghost hidden">Edit character</button>
         </div>
@@ -318,6 +319,20 @@
         <button id="group-cancel" class="ghost">Cancel</button>
         <button id="group-create" class="primary">Start scene</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Branches (saved timelines) -->
+  <div id="branch-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Branches — alternate timelines</h3>
+      <p class="hint">Save the current story as a branch, keep playing, then restore any saved branch to explore a different path. Restoring is safe — your live timeline is auto-saved first.</p>
+      <div class="gen-row">
+        <input id="branch-name" type="text" placeholder="Name this timeline (e.g. “before the betrayal”)…" />
+        <button id="branch-save" type="button" class="primary">Save current</button>
+      </div>
+      <div id="branch-list" class="list"></div>
+      <div class="modal-actions"><span class="spacer"></span><button id="branch-cancel" class="ghost">Close</button></div>
     </div>
   </div>
 

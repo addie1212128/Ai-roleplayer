@@ -166,6 +166,19 @@ def main():
         page.wait_for_function("!document.querySelector('#toast').classList.contains('hidden')", timeout=3000)
         check("UI: shortcuts toast shows", "Shortcuts" in page.inner_text("#toast"))
 
+        # chat branching: save the current timeline, see it listed, restore it
+        page.on("dialog", lambda d: d.accept())  # auto-accept restore/delete confirms
+        check("UI: branch button present", page.locator("#branch-btn").count() == 1)
+        page.click("#branch-btn")
+        page.wait_for_selector("#branch-modal:not(.hidden)", timeout=3000)
+        page.fill("#branch-name", "Path A")
+        page.click("#branch-save")
+        page.wait_for_function("document.querySelectorAll('#branch-list .list-item').length >= 1", timeout=4000)
+        check("UI: branch saved + listed", page.locator("#branch-list .list-item").count() >= 1)
+        page.locator("#branch-list .list-item .act[title='Restore this timeline']").first.click()
+        page.wait_for_function("document.querySelector('#branch-modal').classList.contains('hidden')", timeout=4000)
+        check("UI: branch restore closes modal", page.locator("#branch-modal.hidden").count() == 1)
+
         # impersonate: draft the user's next line into the composer
         page.fill("#input", "")
         page.click("#impersonate-btn")
