@@ -4,12 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Roleplayer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎭</text></svg>" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <!-- Banner shown when Ollama isn't reachable -->
+  <div id="toast" class="toast hidden"></div>
+
   <div id="ollama-banner" class="banner hidden">
-    ⚠️ Can't reach Ollama. Make sure it's installed and running
+    ⚠️ Can't reach Ollama. Install it and make sure it's running
     (<code>ollama serve</code>), then <a href="#" id="retry-ollama">retry</a>.
   </div>
 
@@ -18,31 +20,45 @@
     <aside id="sidebar">
       <div class="brand">🎭 <span>AI Roleplayer</span></div>
 
-      <button id="new-story-btn" class="primary full">+ New Story</button>
-
-      <div class="section-label">Your Stories</div>
+      <div class="section-label">
+        Your Stories
+        <span>
+          <button id="import-story-btn" class="mini" title="Import a story (.json)">⬆</button>
+          <button id="backup-btn" class="mini" title="Download a backup of everything">💾</button>
+        </span>
+      </div>
       <div id="story-list" class="list"></div>
 
       <div class="section-label">
         Characters
-        <button id="new-char-btn" class="mini" title="Create character">+</button>
+        <span>
+          <button id="new-group-btn" class="mini" title="Start a group scene">👥</button>
+          <button id="import-char-btn" class="mini" title="Import Tavern card (.json/.png)">⬇</button>
+          <button id="new-char-btn" class="mini" title="Create character">+</button>
+        </span>
       </div>
       <div id="character-list" class="list"></div>
 
+      <div class="section-label">
+        Personas <button id="new-persona-btn" class="mini" title="Create persona">+</button>
+      </div>
+      <div id="persona-list" class="list"></div>
+
+      <div class="section-label">
+        Lorebooks <button id="new-lore-btn" class="mini" title="Create lorebook">+</button>
+      </div>
+      <div id="lore-list" class="list"></div>
+
       <div class="sidebar-footer">
         <label class="field">
-          <span>Model</span>
+          <span>Default model</span>
           <select id="model-select"></select>
         </label>
-        <label class="field">
-          <span>Creativity <output id="temp-val">0.8</output></span>
-          <input id="temp-slider" type="range" min="0" max="1.5" step="0.05" value="0.8" />
-        </label>
-        <label class="field">
-          <span>Your name</span>
-          <input id="player-name" type="text" placeholder="You" />
-        </label>
+        <div class="hint" id="model-hint"></div>
       </div>
+      <input id="import-file" type="file" accept=".json,.png" class="hidden" />
+      <input id="import-story-file" type="file" accept=".json" class="hidden" />
+      <input id="avatar-file" type="file" accept="image/*" class="hidden" />
     </aside>
 
     <!-- Main chat area -->
@@ -52,16 +68,27 @@
           <span id="active-avatar">🎭</span>
           <span id="active-name">Pick a character to begin</span>
         </div>
-        <button id="edit-active-char" class="ghost hidden">Edit character</button>
+        <div class="header-actions">
+          <span id="ctx-meter" class="ctx-meter hidden" title="Prompt tokens used of context window">ctx —</span>
+          <button id="tts-btn" class="ghost" title="Read replies aloud">🔈 Off</button>
+          <button id="settings-btn" class="ghost hidden" title="Story settings">⚙ Settings</button>
+          <button id="edit-active-char" class="ghost hidden">Edit character</button>
+        </div>
       </header>
 
       <div id="messages" class="messages">
         <div id="empty-state" class="empty-state">
           <div class="big">🎭</div>
           <h2>Start a roleplay</h2>
-          <p>Choose a character from the left — or create your own — and hit
-          <strong>New Story</strong> to begin an adventure.</p>
+          <p>Choose a character on the left — or create/import one — to begin an
+          adventure. Your stories save automatically as you play.</p>
         </div>
+      </div>
+
+      <div id="group-bar" class="group-bar hidden"></div>
+
+      <div id="an-bar" class="an-bar hidden">
+        <input id="an-input" type="text" placeholder="Author's note — a private nudge sent near the end of the prompt (tone, pacing, what should happen next)…" />
       </div>
 
       <form id="composer" class="composer hidden">
@@ -76,35 +103,186 @@
   <div id="char-modal" class="modal hidden">
     <div class="modal-card">
       <h3 id="char-modal-title">New Character</h3>
+      <div class="avatar-edit">
+        <div id="c-avatar-preview" class="avatar-preview">🎭</div>
+        <div class="avatar-actions">
+          <button id="c-avatar-upload" class="ghost" type="button">Upload image</button>
+          <button id="c-avatar-clear" class="ghost" type="button">Use emoji</button>
+        </div>
+      </div>
+      <div class="row">
+        <label class="field" style="flex:0 0 90px">
+          <span>Emoji</span>
+          <input id="c-avatar" type="text" maxlength="4" placeholder="🎭" />
+        </label>
+        <label class="field" style="flex:1">
+          <span>Name</span>
+          <input id="c-name" type="text" placeholder="e.g. Captain Vale" />
+        </label>
+      </div>
       <label class="field">
-        <span>Avatar (emoji)</span>
-        <input id="c-avatar" type="text" maxlength="4" placeholder="🎭" />
+        <span>Description <em>(who they are)</em> <output id="perm-tokens" class="token-badge"></output></span>
+        <textarea id="c-description" rows="3"></textarea>
       </label>
       <label class="field">
-        <span>Name</span>
-        <input id="c-name" type="text" placeholder="e.g. Captain Vale" />
+        <span>Personality <em>(how they act &amp; speak — 4–6 concrete traits)</em></span>
+        <textarea id="c-personality" rows="2"></textarea>
       </label>
       <label class="field">
-        <span>Description <em>(who they are)</em></span>
-        <textarea id="c-description" rows="2" placeholder="A weathered starship captain with a dry wit…"></textarea>
+        <span>Scenario <em>(setting &amp; situation — 1–2 sentences)</em></span>
+        <textarea id="c-scenario" rows="2"></textarea>
       </label>
       <label class="field">
-        <span>Personality <em>(how they act &amp; speak)</em></span>
-        <textarea id="c-personality" rows="2" placeholder="Gruff but fair, loyal, speaks in clipped sentences…"></textarea>
+        <span>Greeting <em>(opening message — sets the voice &amp; length)</em></span>
+        <textarea id="c-greeting" rows="3"></textarea>
       </label>
-      <label class="field">
-        <span>Scenario <em>(the setting &amp; situation)</em></span>
-        <textarea id="c-scenario" rows="2" placeholder="You've just boarded her ship seeking passage to the outer colonies…"></textarea>
-      </label>
-      <label class="field">
-        <span>Greeting <em>(their opening message)</em></span>
-        <textarea id="c-greeting" rows="3" placeholder="*She looks up from the console* 'So you're the one looking for a ride.'"></textarea>
-      </label>
+      <details>
+        <summary>Advanced character fields</summary>
+        <label class="field">
+          <span>Example dialogue <em>(separate exchanges with <code>&lt;START&gt;</code>; locks in voice)</em></span>
+          <textarea id="c-example" rows="4" placeholder="<START>&#10;{{user}}: Hello&#10;{{char}}: *looks up* Well met."></textarea>
+        </label>
+        <label class="field">
+          <span>System prompt override <em>(blank = default; use <code>{{original}}</code> to extend it)</em></span>
+          <textarea id="c-system" rows="3"></textarea>
+        </label>
+        <label class="field">
+          <span>Post-history instructions <em>(injected after the chat — strong anti-drift)</em></span>
+          <textarea id="c-phi" rows="2"></textarea>
+        </label>
+        <label class="field">
+          <span>Alternate greetings <em>(separate each with a line <code>---</code>; pick one when starting a story)</em></span>
+          <textarea id="c-altgreet" rows="3" placeholder="*A different opening…*&#10;---&#10;*Another one…*"></textarea>
+        </label>
+        <div class="row">
+          <label class="field" style="flex:1">
+            <span>Narrative voice</span>
+            <select id="c-pov">
+              <option value="">Match the greeting (default)</option>
+              <option value="third">Third person</option>
+              <option value="first">First person</option>
+            </select>
+          </label>
+          <label class="field" style="flex:1">
+            <span>Lorebook</span>
+            <select id="c-lorebook"><option value="">None</option></select>
+          </label>
+        </div>
+      </details>
       <div class="modal-actions">
         <button id="char-delete" class="danger hidden">Delete</button>
+        <button id="char-export" class="ghost hidden">Export card</button>
         <span class="spacer"></span>
         <button id="char-cancel" class="ghost">Cancel</button>
         <button id="char-save" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Story settings drawer -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Story settings</h3>
+      <div class="row">
+        <label class="field" style="flex:1">
+          <span>Model</span>
+          <select id="s-model"></select>
+        </label>
+        <label class="field" style="flex:1">
+          <span>Persona <em>(who you are)</em></span>
+          <select id="s-persona"><option value="">None</option></select>
+        </label>
+      </div>
+      <label class="field">
+        <span>Creativity <output id="s-temp-val"></output> <em>(temperature)</em></span>
+        <input id="s-temp" type="range" min="0.3" max="1.6" step="0.05" />
+      </label>
+      <label class="field">
+        <span>Context size (num_ctx) <output id="s-ctx-val"></output> <em>(higher = longer memory, more VRAM)</em></span>
+        <input id="s-ctx" type="range" min="4096" max="32768" step="2048" />
+      </label>
+      <label class="field">
+        <span>Max reply length (num_predict) <output id="s-pred-val"></output></span>
+        <input id="s-pred" type="range" min="128" max="1024" step="64" />
+      </label>
+      <div class="row" style="align-items:flex-end">
+        <label class="inline" style="flex:0 0 auto; gap:6px; color:var(--muted); font-size:13px"><input id="s-rag" type="checkbox" style="width:auto" /> Long-term memory (RAG recall)</label>
+        <label class="field" style="flex:1"><span>Embedding model</span><input id="s-embed" type="text" placeholder="nomic-embed-text" /></label>
+      </div>
+      <p class="hint">RAG surfaces relevant older moments via embeddings. Pull the model first: <code>ollama pull nomic-embed-text</code>. Leave off if unsure.</p>
+      <details>
+        <summary>Advanced samplers</summary>
+        <div class="row">
+          <label class="field" style="flex:1"><span>min_p</span><input id="s-minp" type="number" step="0.01" min="0" max="1" /></label>
+          <label class="field" style="flex:1"><span>top_p</span><input id="s-topp" type="number" step="0.01" min="0" max="1" /></label>
+          <label class="field" style="flex:1"><span>top_k</span><input id="s-topk" type="number" step="1" min="0" /></label>
+        </div>
+        <div class="row">
+          <label class="field" style="flex:1"><span>repeat_penalty</span><input id="s-reppen" type="number" step="0.01" min="1" max="1.3" /></label>
+          <label class="field" style="flex:1"><span>repeat_last_n</span><input id="s-repn" type="number" step="16" min="0" /></label>
+        </div>
+        <button id="s-reset-preset" class="ghost">Reset to model's recommended preset</button>
+      </details>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="settings-cancel" class="ghost">Close</button>
+        <button id="settings-save" class="primary">Save settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Persona editor -->
+  <div id="persona-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="persona-modal-title">New Persona</h3>
+      <label class="field"><span>Name</span><input id="p-name" type="text" placeholder="Your character's name" /></label>
+      <label class="field"><span>Description <em>(who YOU are in the story)</em></span><textarea id="p-desc" rows="4"></textarea></label>
+      <div class="modal-actions">
+        <button id="persona-delete" class="danger hidden">Delete</button>
+        <span class="spacer"></span>
+        <button id="persona-cancel" class="ghost">Cancel</button>
+        <button id="persona-save" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Group creator -->
+  <div id="group-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>New group scene</h3>
+      <p class="hint">Pick two or more characters to share a scene. On your turn a character replies automatically (mention a name to direct it) — or tap a character below the chat to make them speak.</p>
+      <div id="group-pick" class="group-pick"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="group-cancel" class="ghost">Cancel</button>
+        <button id="group-create" class="primary">Start scene</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Greeting chooser -->
+  <div id="greet-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="greet-modal-title">Choose an opening</h3>
+      <p class="hint">This character has more than one opening scene. Pick where your story begins.</p>
+      <div id="greet-options"></div>
+      <div class="modal-actions"><span class="spacer"></span><button id="greet-cancel" class="ghost">Cancel</button></div>
+    </div>
+  </div>
+
+  <!-- Lorebook editor -->
+  <div id="lore-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h3 id="lore-modal-title">New Lorebook</h3>
+      <label class="field"><span>Name</span><input id="l-name" type="text" placeholder="e.g. My World" /></label>
+      <p class="hint">Entries inject their text only when a keyword appears in recent messages — so the bot "knows" a whole world without it filling the context every turn.</p>
+      <div id="lore-entries"></div>
+      <button id="lore-add-entry" class="ghost">+ Add entry</button>
+      <div class="modal-actions">
+        <button id="lore-delete" class="danger hidden">Delete book</button>
+        <span class="spacer"></span>
+        <button id="lore-cancel" class="ghost">Cancel</button>
+        <button id="lore-save" class="primary">Save</button>
       </div>
     </div>
   </div>

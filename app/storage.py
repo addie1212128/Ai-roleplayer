@@ -1,32 +1,61 @@
-"""Simple JSON-file storage for characters and story sessions.
+"""JSON-file storage for characters, stories, lorebooks, and personas.
 
-Everything lives under ./data/ (git-ignored) so the user's own characters and
-saved roleplays stay local to their machine. Bundled example characters in
-./presets/characters/ are copied in on first run.
+Everything lives under ./data/ (git-ignored) so the user's own content stays
+local. Bundled example characters in ./presets/characters/ are copied in on
+first run. Writes are atomic (temp file + os.replace) so a crash or a second
+writer can't leave a half-written / corrupt file.
 """
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
+# IDs become filenames, so restrict them to a safe charset. This blocks path
+# traversal (e.g. a client-supplied id of "../../tmp/x") on every store.
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _safe_id(oid) -> bool:
+    return isinstance(oid, str) and _ID_RE.match(oid) is not None
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 CHAR_DIR = DATA / "characters"
 STORY_DIR = DATA / "stories"
+LORE_DIR = DATA / "lorebooks"
+PERSONA_DIR = DATA / "personas"
+AVATAR_DIR = DATA / "avatars"
+VEC_DIR = DATA / "vectors"
 PRESET_DIR = ROOT / "presets" / "characters"
+
+_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR)
+
+
+def use_data_dir(path) -> None:
+    """Point every store at a new data root (used by tests)."""
+    global DATA, CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, _DIRS
+    DATA = Path(path)
+    CHAR_DIR = DATA / "characters"
+    STORY_DIR = DATA / "stories"
+    LORE_DIR = DATA / "lorebooks"
+    PERSONA_DIR = DATA / "personas"
+    AVATAR_DIR = DATA / "avatars"
+    VEC_DIR = DATA / "vectors"
+    _DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR)
 
 
 def _ensure_dirs() -> None:
-    CHAR_DIR.mkdir(parents=True, exist_ok=True)
-    STORY_DIR.mkdir(parents=True, exist_ok=True)
+    for d in _DIRS:
+        d.mkdir(parents=True, exist_ok=True)
 
 
 def seed_presets() -> None:
-    """Copy bundled example characters into data/ the first time we run."""
     _ensure_dirs()
     if any(CHAR_DIR.glob("*.json")):
         return
@@ -47,50 +76,72 @@ def _read(path: Path) -> Optional[dict]:
 
 
 def _write(path: Path, obj: dict) -> None:
-    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    """Atomic write: serialize to a temp file in the same dir, then os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)  # atomic on POSIX and Windows
 
 
-# ----- characters -------------------------------------------------------------
-
-def list_characters() -> list[dict]:
+def _list(dir_: Path) -> list[dict]:
     _ensure_dirs()
-    chars = [c for f in sorted(CHAR_DIR.glob("*.json")) if (c := _read(f))]
-    chars.sort(key=lambda c: c.get("name", "").lower())
-    return chars
+    return [o for f in sorted(dir_.glob("*.json")) if (o := _read(f))]
 
 
-def get_character(cid: str) -> Optional[dict]:
-    return _read(CHAR_DIR / f"{cid}.json")
+# Generic, id-validated document CRUD shared by every store.
+
+def _doc_get(dir_: Path, oid) -> Optional[dict]:
+    if not _safe_id(oid):
+        return None
+    return _read(dir_ / f"{oid}.json")
 
 
-def save_character(char: dict) -> dict:
-    _ensure_dirs()
-    if not char.get("id"):
-        char["id"] = new_id()
-        char["created"] = time.time()
-    char["updated"] = time.time()
-    _write(CHAR_DIR / f"{char['id']}.json", char)
-    return char
+def _doc_save(dir_: Path, doc: dict) -> dict:
+    # A missing OR unsafe id is replaced with a fresh one, so a client can
+    # never steer the write path outside its store.
+    if not _safe_id(doc.get("id")):
+        doc["id"] = new_id()
+        doc["created"] = time.time()
+    doc["updated"] = time.time()
+    _write(dir_ / f"{doc['id']}.json", doc)
+    return doc
 
 
-def delete_character(cid: str) -> bool:
-    f = CHAR_DIR / f"{cid}.json"
+def _doc_delete(dir_: Path, oid) -> bool:
+    if not _safe_id(oid):
+        return False
+    f = dir_ / f"{oid}.json"
     if f.exists():
         f.unlink()
         return True
     return False
 
 
+# ----- characters -------------------------------------------------------------
+
+def list_characters() -> list[dict]:
+    chars = _list(CHAR_DIR)
+    chars.sort(key=lambda c: c.get("name", "").lower())
+    return chars
+
+
+def get_character(cid: str) -> Optional[dict]:
+    return _doc_get(CHAR_DIR, cid)
+
+
+def save_character(char: dict) -> dict:
+    return _doc_save(CHAR_DIR, char)
+
+
+def delete_character(cid: str) -> bool:
+    return _doc_delete(CHAR_DIR, cid)
+
+
 # ----- stories ----------------------------------------------------------------
 
 def list_stories() -> list[dict]:
-    """Return lightweight metadata for each saved story (no full message log)."""
-    _ensure_dirs()
     out = []
-    for f in sorted(STORY_DIR.glob("*.json")):
-        s = _read(f)
-        if not s:
-            continue
+    for s in _list(STORY_DIR):
         out.append({
             "id": s.get("id"),
             "title": s.get("title", "Untitled"),
@@ -105,22 +156,69 @@ def list_stories() -> list[dict]:
 
 
 def get_story(sid: str) -> Optional[dict]:
-    return _read(STORY_DIR / f"{sid}.json")
+    return _doc_get(STORY_DIR, sid)
 
 
 def save_story(story: dict) -> dict:
-    _ensure_dirs()
-    if not story.get("id"):
-        story["id"] = new_id()
-        story["created"] = time.time()
-    story["updated"] = time.time()
-    _write(STORY_DIR / f"{story['id']}.json", story)
-    return story
+    return _doc_save(STORY_DIR, story)
 
 
 def delete_story(sid: str) -> bool:
-    f = STORY_DIR / f"{sid}.json"
-    if f.exists():
-        f.unlink()
-        return True
-    return False
+    ok = _doc_delete(STORY_DIR, sid)
+    if ok and _safe_id(sid):  # drop the vector sidecar too
+        vf = VEC_DIR / f"{sid}.json"
+        if vf.exists():
+            try:
+                vf.unlink()
+            except OSError:
+                pass
+    return ok
+
+
+# ----- vector stores (RAG, optional) -----------------------------------------
+
+def get_vec(sid: str) -> Optional[dict]:
+    return _doc_get(VEC_DIR, sid) if _safe_id(sid) else None
+
+
+def save_vec(sid: str, data: dict) -> None:
+    if _safe_id(sid):
+        _write(VEC_DIR / f"{sid}.json", data)
+
+
+# ----- lorebooks --------------------------------------------------------------
+
+def list_lorebooks() -> list[dict]:
+    books = _list(LORE_DIR)
+    books.sort(key=lambda b: b.get("name", "").lower())
+    return books
+
+
+def get_lorebook(bid: str) -> Optional[dict]:
+    return _doc_get(LORE_DIR, bid)
+
+
+def save_lorebook(book: dict) -> dict:
+    return _doc_save(LORE_DIR, book)
+
+
+def delete_lorebook(bid: str) -> bool:
+    return _doc_delete(LORE_DIR, bid)
+
+
+# ----- personas ---------------------------------------------------------------
+
+def list_personas() -> list[dict]:
+    return _list(PERSONA_DIR)
+
+
+def get_persona(pid: str) -> Optional[dict]:
+    return _doc_get(PERSONA_DIR, pid)
+
+
+def save_persona(persona: dict) -> dict:
+    return _doc_save(PERSONA_DIR, persona)
+
+
+def delete_persona(pid: str) -> bool:
+    return _doc_delete(PERSONA_DIR, pid)
