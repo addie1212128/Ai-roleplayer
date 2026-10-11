@@ -182,8 +182,15 @@ def main():
     print()
     if FAILED:
         print(f"❌ {len(FAILED)} UI check(s) failed: {FAILED}")
-        sys.exit(1)
+        sys.stdout.flush()
+        os._exit(1)
     print("✅ All UI checks passed.")
+    sys.stdout.flush()
+    # Playwright/Chromium + the daemon uvicorn threads can segfault during Python
+    # interpreter teardown in CI *after* every check has passed (exit 139). The
+    # test result is already decided here, so exit hard with the real status and
+    # skip the flaky native teardown — a teardown crash must not fail a green run.
+    os._exit(0)
 
 
 if __name__ == "__main__":
