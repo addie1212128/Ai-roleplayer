@@ -20,7 +20,13 @@
     <aside id="sidebar">
       <div class="brand">🎭 <span>AI Roleplayer</span></div>
 
-      <div class="section-label">Your Stories</div>
+      <div class="section-label">
+        Your Stories
+        <span>
+          <button id="import-story-btn" class="mini" title="Import a story (.json)">⬆</button>
+          <button id="backup-btn" class="mini" title="Download a backup of everything">💾</button>
+        </span>
+      </div>
       <div id="story-list" class="list"></div>
 
       <div class="section-label">
@@ -50,6 +56,8 @@
         <div class="hint" id="model-hint"></div>
       </div>
       <input id="import-file" type="file" accept=".json,.png" class="hidden" />
+      <input id="import-story-file" type="file" accept=".json" class="hidden" />
+      <input id="avatar-file" type="file" accept="image/*" class="hidden" />
     </aside>
 
     <!-- Main chat area -->
@@ -61,6 +69,7 @@
         </div>
         <div class="header-actions">
           <span id="ctx-meter" class="ctx-meter hidden" title="Prompt tokens used of context window">ctx —</span>
+          <button id="tts-btn" class="ghost" title="Read replies aloud">🔈 Off</button>
           <button id="settings-btn" class="ghost hidden" title="Story settings">⚙ Settings</button>
           <button id="edit-active-char" class="ghost hidden">Edit character</button>
         </div>
@@ -91,9 +100,16 @@
   <div id="char-modal" class="modal hidden">
     <div class="modal-card">
       <h3 id="char-modal-title">New Character</h3>
+      <div class="avatar-edit">
+        <div id="c-avatar-preview" class="avatar-preview">🎭</div>
+        <div class="avatar-actions">
+          <button id="c-avatar-upload" class="ghost" type="button">Upload image</button>
+          <button id="c-avatar-clear" class="ghost" type="button">Use emoji</button>
+        </div>
+      </div>
       <div class="row">
         <label class="field" style="flex:0 0 90px">
-          <span>Avatar</span>
+          <span>Emoji</span>
           <input id="c-avatar" type="text" maxlength="4" placeholder="🎭" />
         </label>
         <label class="field" style="flex:1">
@@ -130,6 +146,10 @@
         <label class="field">
           <span>Post-history instructions <em>(injected after the chat — strong anti-drift)</em></span>
           <textarea id="c-phi" rows="2"></textarea>
+        </label>
+        <label class="field">
+          <span>Alternate greetings <em>(separate each with a line <code>---</code>; pick one when starting a story)</em></span>
+          <textarea id="c-altgreet" rows="3" placeholder="*A different opening…*&#10;---&#10;*Another one…*"></textarea>
         </label>
         <div class="row">
           <label class="field" style="flex:1">
@@ -215,6 +235,16 @@
         <button id="persona-cancel" class="ghost">Cancel</button>
         <button id="persona-save" class="primary">Save</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Greeting chooser -->
+  <div id="greet-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="greet-modal-title">Choose an opening</h3>
+      <p class="hint">This character has more than one opening scene. Pick where your story begins.</p>
+      <div id="greet-options"></div>
+      <div class="modal-actions"><span class="spacer"></span><button id="greet-cancel" class="ghost">Cancel</button></div>
     </div>
   </div>
 

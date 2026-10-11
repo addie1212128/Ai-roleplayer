@@ -36,7 +36,8 @@ storage.CHAR_DIR = storage.DATA / "characters"
 storage.STORY_DIR = storage.DATA / "stories"
 storage.LORE_DIR = storage.DATA / "lorebooks"
 storage.PERSONA_DIR = storage.DATA / "personas"
-storage._DIRS = (storage.CHAR_DIR, storage.STORY_DIR, storage.LORE_DIR, storage.PERSONA_DIR)
+storage.AVATAR_DIR = storage.DATA / "avatars"
+storage._DIRS = (storage.CHAR_DIR, storage.STORY_DIR, storage.LORE_DIR, storage.PERSONA_DIR, storage.AVATAR_DIR)
 
 from app import cards, context          # noqa: E402
 from app.samplers import preset_for, build_options, DEFAULTS  # noqa: E402
@@ -396,6 +397,25 @@ def test_integration():
     imp = client.post("/api/characters/import", json={"filename": "x.png",
                                                       "data_b64": base64.b64encode(png).decode()}).json()
     check("api: import PNG card", imp["name"] == "Imported" and imp["greeting"] == "hi")
+    check("api: import sets avatar from PNG", imp.get("avatar_image") == f"/avatars/{imp['id']}.png")
+
+    # avatar upload + serve
+    av = client.post(f"/api/characters/{char['id']}/avatar",
+                     json={"data_b64": base64.b64encode(png).decode(), "ext": "png"}).json()
+    check("api: avatar set", av.get("avatar_image") == f"/avatars/{char['id']}.png")
+    check("api: avatar served", client.get(av["avatar_image"]).status_code == 200)
+
+    # story export -> re-import (fresh id, same messages)
+    exp = client.get(f"/api/stories/{story['id']}/export")
+    check("api: story export ok", exp.status_code == 200 and "messages" in exp.json())
+    imp_story = client.post("/api/stories/import",
+                            json={"filename": "s.json", "data_b64": base64.b64encode(exp.content).decode()}).json()
+    check("api: story import new id + messages kept",
+          imp_story["id"] != story["id"] and len(imp_story["messages"]) == len(exp.json()["messages"]))
+
+    # full backup zip
+    bk = client.get("/api/backup")
+    check("api: backup zip", bk.status_code == 200 and bk.content[:2] == b"PK")
 
     # persona
     p = client.post("/api/personas", json={"name": "Sam", "description": "A traveler."}).json()

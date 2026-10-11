@@ -10,7 +10,7 @@ const state = {
   story: null, model: null,
   streaming: false, abort: null,
   editingCharId: null, editingPersonaId: null, editingLoreId: null,
-  loreDraft: null,
+  editingCharImage: null, loreDraft: null, tts: false,
 };
 
 const prefs = {
@@ -32,9 +32,12 @@ const api = {
   saveCharacter: (c) => jsend(c.id ? `/api/characters/${c.id}` : "/api/characters", c.id ? "PUT" : "POST", c),
   deleteCharacter: (id) => fetch(`/api/characters/${id}`, { method: "DELETE" }),
   importCharacter: (filename, data_b64) => jsend("/api/characters/import", "POST", { filename, data_b64 }),
+  setAvatar: (cid, data_b64, ext) => jsend(`/api/characters/${cid}/avatar`, "POST", { data_b64, ext }),
+  clearAvatarImg: (cid) => fetch(`/api/characters/${cid}/avatar`, { method: "DELETE" }),
   stories: () => jget("/api/stories"),
   getStory: (id) => jget(`/api/stories/${id}`),
   createStory: (s) => jsend("/api/stories", "POST", s),
+  importStory: (filename, data_b64) => jsend("/api/stories/import", "POST", { filename, data_b64 }),
   deleteStory: (id) => fetch(`/api/stories/${id}`, { method: "DELETE" }),
   storyMeta: (id, patch) => jsend(`/api/stories/${id}/meta`, "PUT", patch),
   editMessage: (id, idx, content) => jsend(`/api/stories/${id}/message/${idx}`, "PUT", { content }),
@@ -59,6 +62,15 @@ function stripThink(s) {
 }
 function estTokens(s) { return Math.ceil((s || "").length / 4); }
 function currentCharacter() { return state.story ? state.characters.find((c) => c.id === state.story.character_id) : null; }
+function avatarHtml(entity, fallback = "🎭") {
+  if (entity && entity.avatar_image) return `<img class="av" src="${escapeHtml(entity.avatar_image)}" alt="" />`;
+  return escapeHtml((entity && entity.avatar) || fallback);
+}
+function speak(text) {
+  if (!("speechSynthesis" in window) || !text) return;
+  const clean = text.replace(/\*([^*]+)\*/g, "$1").replace(/[*_`#>~]/g, "");
+  try { window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance(clean)); } catch {}
+}
 
 // ---------- rendering: messages ----------
 function renderMessages() {
@@ -79,7 +91,7 @@ function buildBubble(m, i, char, isLast) {
   wrap.className = `msg ${m.role === "user" ? "user" : "ai"}`;
   const who = document.createElement("div");
   who.className = "who";
-  who.textContent = m.role === "user" ? "🧑" : (char ? char.avatar : "🎭");
+  who.innerHTML = m.role === "user" ? "🧑" : avatarHtml(char);
   const col = document.createElement("div");
   col.className = "col";
   const bubble = document.createElement("div");
@@ -113,6 +125,7 @@ function buildControls(m, i, isLast, bubble) {
     ctl.appendChild(btn("↻", "Regenerate", () => chatAction("regenerate")));
     ctl.appendChild(btn("↳", "Continue", () => chatAction("continue")));
   }
+  if (isAssistant && "speechSynthesis" in window) ctl.appendChild(btn("🔊", "Read aloud", () => speak(m.content)));
   ctl.appendChild(btn("✎", "Edit", () => startEdit(i, bubble)));
   ctl.appendChild(btn("🗑", "Delete from here", () => deleteFrom(i)));
   return ctl;
@@ -122,7 +135,7 @@ function scrollToBottom() { const m = $("#messages"); m.scrollTop = m.scrollHeig
 
 function updateHeader() {
   const char = currentCharacter();
-  $("#active-avatar").textContent = char ? char.avatar : "🎭";
+  $("#active-avatar").innerHTML = char ? avatarHtml(char) : "🎭";
   $("#active-name").textContent = char ? char.name : (state.story ? state.story.title : "Pick a character to begin");
   const open = !!state.story;
   $("#edit-active-char").classList.toggle("hidden", !char);
@@ -175,7 +188,7 @@ async function chatAction(action, userText) {
   const tmp = document.createElement("div");
   tmp.className = "msg ai";
   const char = currentCharacter();
-  tmp.innerHTML = `<div class="who">${escapeHtml(char ? char.avatar : "🎭")}</div><div class="col"><div class="bubble cursor"></div></div>`;
+  tmp.innerHTML = `<div class="who">${char ? avatarHtml(char) : "🎭"}</div><div class="col"><div class="bubble cursor"></div></div>`;
   if ($("#empty-state")) renderMessages();
   $("#messages").appendChild(tmp);
   const tmpBubble = tmp.querySelector(".bubble");
@@ -223,6 +236,11 @@ async function chatAction(action, userText) {
     if ((errorMsg || aborted) && action === "send" && userText) {
       const inp = $("#input"); inp.value = userText; inp.dispatchEvent(new Event("input"));
     }
+    // Read the finished reply aloud if TTS is on.
+    if (state.tts && !errorMsg && !aborted && state.story) {
+      const last = state.story.messages[state.story.messages.length - 1];
+      if (last && last.role === "assistant") speak(last.content);
+    }
   }
 }
 
@@ -232,6 +250,11 @@ function showToast(msg) {
   t.classList.remove("hidden");
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => t.classList.add("hidden"), 6000);
+}
+
+function updateTtsBtn() {
+  const b = $("#tts-btn");
+  if (b) b.textContent = state.tts ? "🔊 On" : "🔈 Off";
 }
 
 function swipe(i, dir) {
@@ -279,8 +302,14 @@ function updateCtxMeter(prompt_tokens, num_ctx) {
 
 // ---------- story lifecycle ----------
 async function startStoryWith(char) {
+  const alts = (char.alternate_greetings || []).filter((g) => g && g.trim());
+  if (alts.length) { openGreetChooser(char, alts); return; }
+  await createStoryWithGreeting(char, char.greeting);
+}
+
+async function createStoryWithGreeting(char, greeting) {
   const messages = [];
-  if (char.greeting) messages.push({ role: "assistant", content: char.greeting });
+  if (greeting && greeting.trim()) messages.push({ role: "assistant", content: greeting });
   const created = await api.createStory({
     title: char.name, character_id: char.id, character_name: char.name,
     model: state.model, messages,
@@ -292,6 +321,22 @@ async function startStoryWith(char) {
   $("#input").focus();
 }
 
+function openGreetChooser(char, alts) {
+  const box = $("#greet-options");
+  box.innerHTML = "";
+  const options = [{ label: "Default greeting", text: char.greeting || "" }];
+  alts.forEach((g, i) => options.push({ label: `Alternate ${i + 1}`, text: g }));
+  for (const o of options) {
+    const el = document.createElement("div");
+    el.className = "greet-option";
+    const preview = o.text ? (o.text.length > 400 ? o.text.slice(0, 400) + "…" : o.text) : "(empty opening)";
+    el.innerHTML = `<div class="label">${escapeHtml(o.label)}</div>${formatContent(preview)}`;
+    el.onclick = () => { $("#greet-modal").classList.add("hidden"); createStoryWithGreeting(char, o.text); };
+    box.appendChild(el);
+  }
+  $("#greet-modal").classList.remove("hidden");
+}
+
 async function openStory(id) {
   state.story = await api.getStory(id);
   renderStories(); renderMessages(); updateHeader();
@@ -299,10 +344,11 @@ async function openStory(id) {
 }
 
 // ---------- sidebar lists ----------
-function listItem({ emoji, title, sub, onClick, actions }) {
+function listItem({ emoji, emojiHtml, title, sub, onClick, actions }) {
   const el = document.createElement("div");
   el.className = "list-item";
-  el.innerHTML = `<span class="emoji">${escapeHtml(emoji)}</span><div class="meta"><div class="title">${escapeHtml(title)}</div>${sub ? `<div class="sub">${escapeHtml(sub)}</div>` : ""}</div>`;
+  const mark = emojiHtml != null ? emojiHtml : escapeHtml(emoji);
+  el.innerHTML = `<span class="emoji">${mark}</span><div class="meta"><div class="title">${escapeHtml(title)}</div>${sub ? `<div class="sub">${escapeHtml(sub)}</div>` : ""}</div>`;
   if (onClick) el.onclick = onClick;
   (actions || []).forEach(({ label, title: t, cls, fn }) => {
     const b = document.createElement("button");
@@ -320,12 +366,15 @@ function renderStories() {
     box.appendChild(listItem({
       emoji: "📖", title: s.title, sub: `${s.character_name || ""} · ${s.turns} msgs`,
       onClick: () => openStory(s.id),
-      actions: [{ label: "🗑", title: "Delete", cls: "del", fn: async () => {
-        if (!confirm(`Delete "${s.title}"?`)) return;
-        await api.deleteStory(s.id);
-        if (state.story && state.story.id === s.id) { state.story = null; renderMessages(); updateHeader(); }
-        await refreshStories();
-      } }],
+      actions: [
+        { label: "⤓", title: "Export", fn: () => window.open(`/api/stories/${s.id}/export`, "_blank") },
+        { label: "🗑", title: "Delete", cls: "del", fn: async () => {
+          if (!confirm(`Delete "${s.title}"?`)) return;
+          await api.deleteStory(s.id);
+          if (state.story && state.story.id === s.id) { state.story = null; renderMessages(); updateHeader(); }
+          await refreshStories();
+        } },
+      ],
     }));
     if (state.story && s.id === state.story.id) box.lastChild.classList.add("active");
   }
@@ -336,7 +385,7 @@ function renderCharacters() {
   if (!state.characters.length) { box.innerHTML = `<div class="hint">No characters yet.</div>`; return; }
   for (const c of state.characters) {
     box.appendChild(listItem({
-      emoji: c.avatar || "🎭", title: c.name, sub: c.description || "",
+      emojiHtml: avatarHtml(c), title: c.name, sub: c.description || "",
       onClick: () => startStoryWith(c),
       actions: [{ label: "✎", title: "Edit", fn: () => openCharModal(c) }],
     }));
@@ -365,6 +414,9 @@ function openCharModal(char) {
   $("#char-modal-title").textContent = char ? `Edit ${char.name}` : "New Character";
   const g = (k, d = "") => (char && char[k] != null ? char[k] : d);
   $("#c-avatar").value = g("avatar", "🎭");
+  state.editingCharImage = (char && char.avatar_image) || null;
+  renderAvatarPreview();
+  $("#c-altgreet").value = ((char && char.alternate_greetings) || []).join("\n---\n");
   $("#c-name").value = g("name");
   $("#c-description").value = g("description");
   $("#c-personality").value = g("personality");
@@ -384,6 +436,15 @@ function openCharModal(char) {
   $("#c-name").focus();
 }
 function closeCharModal() { $("#char-modal").classList.add("hidden"); }
+function renderAvatarPreview() {
+  const p = $("#c-avatar-preview");
+  if (state.editingCharImage) p.innerHTML = `<img src="${escapeHtml(state.editingCharImage)}" alt="" />`;
+  else p.textContent = ($("#c-avatar").value || "").trim() || "🎭";
+}
+function parseAltGreetings(v) {
+  const parts = (v || "").split(/\n-{3,}\n/).map((s) => s.trim()).filter(Boolean);
+  return parts.length ? parts : null;
+}
 function updatePermTokens() {
   const t = estTokens($("#c-description").value) + estTokens($("#c-personality").value) + estTokens($("#c-scenario").value);
   const el = $("#perm-tokens");
@@ -400,6 +461,8 @@ async function saveCharFromModal() {
     example_dialogue: $("#c-example").value, system_prompt: $("#c-system").value,
     post_history_instructions: $("#c-phi").value, pov: $("#c-pov").value,
     lorebook_id: $("#c-lorebook").value || null,
+    alternate_greetings: parseAltGreetings($("#c-altgreet").value),
+    avatar_image: state.editingCharImage,
   };
   await api.saveCharacter(char);
   closeCharModal();
@@ -561,12 +624,65 @@ function init() {
   $("#model-select").addEventListener("change", (e) => { state.model = e.target.value; prefs.model = e.target.value; });
   $("#retry-ollama").addEventListener("click", (e) => { e.preventDefault(); refreshModels(); });
 
+  // text-to-speech toggle
+  try { state.tts = localStorage.getItem("rp_tts") === "1"; } catch { state.tts = false; }
+  updateTtsBtn();
+  if (!("speechSynthesis" in window)) $("#tts-btn").classList.add("hidden");
+  $("#tts-btn").onclick = () => {
+    state.tts = !state.tts;
+    try { localStorage.setItem("rp_tts", state.tts ? "1" : "0"); } catch {}
+    if (!state.tts && "speechSynthesis" in window) window.speechSynthesis.cancel();
+    updateTtsBtn();
+  };
+
+  // story import / full backup
+  $("#import-story-btn").onclick = () => $("#import-story-file").click();
+  $("#import-story-file").addEventListener("change", (e) => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = String(reader.result).split(",").pop();
+      try { const s = await api.importStory(f.name, b64); await refreshStories(); await openStory(s.id); }
+      catch (err) { alert("Story import failed: " + err.message); }
+    };
+    reader.readAsDataURL(f);
+  });
+  $("#backup-btn").onclick = () => window.open("/api/backup", "_blank");
+
+  // greeting chooser
+  $("#greet-cancel").onclick = () => $("#greet-modal").classList.add("hidden");
+  bindModal("#greet-modal", []);
+
   // character modal
   $("#new-char-btn").onclick = () => openCharModal(null);
   $("#edit-active-char").onclick = () => { const c = currentCharacter(); if (c) openCharModal(c); };
   $("#char-cancel").onclick = closeCharModal;
   $("#char-save").onclick = saveCharFromModal;
   ["#c-description", "#c-personality", "#c-scenario"].forEach((s) => $(s).addEventListener("input", updatePermTokens));
+  $("#c-avatar").addEventListener("input", renderAvatarPreview);
+  $("#c-avatar-upload").onclick = () => {
+    if (!state.editingCharId) { alert("Save the character first, then add an image."); return; }
+    $("#avatar-file").click();
+  };
+  $("#avatar-file").addEventListener("change", (e) => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (!f || !state.editingCharId) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = String(reader.result).split(",").pop();
+      const ext = (f.name.split(".").pop() || "png").toLowerCase();
+      try {
+        const updated = await api.setAvatar(state.editingCharId, b64, ext);
+        state.editingCharImage = updated.avatar_image; renderAvatarPreview(); await refreshCharacters();
+      } catch (err) { alert("Avatar upload failed: " + err.message); }
+    };
+    reader.readAsDataURL(f);
+  });
+  $("#c-avatar-clear").onclick = async () => {
+    if (state.editingCharId && state.editingCharImage) { try { await api.clearAvatarImg(state.editingCharId); } catch {} }
+    state.editingCharImage = null; renderAvatarPreview(); await refreshCharacters();
+  };
   $("#char-delete").onclick = async () => {
     if (!state.editingCharId || !confirm("Delete this character? Saved stories keep working.")) return;
     await api.deleteCharacter(state.editingCharId); closeCharModal(); await refreshCharacters();

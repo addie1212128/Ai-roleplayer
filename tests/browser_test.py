@@ -44,7 +44,8 @@ storage.CHAR_DIR = storage.DATA / "characters"
 storage.STORY_DIR = storage.DATA / "stories"
 storage.LORE_DIR = storage.DATA / "lorebooks"
 storage.PERSONA_DIR = storage.DATA / "personas"
-storage._DIRS = (storage.CHAR_DIR, storage.STORY_DIR, storage.LORE_DIR, storage.PERSONA_DIR)
+storage.AVATAR_DIR = storage.DATA / "avatars"
+storage._DIRS = (storage.CHAR_DIR, storage.STORY_DIR, storage.LORE_DIR, storage.PERSONA_DIR, storage.AVATAR_DIR)
 
 
 def start_fake_ollama(port):
@@ -156,6 +157,14 @@ def main():
         check("UI: char editor has example field", page.locator("#c-example").count() == 1)
         check("UI: permanent-token badge computed", "tokens" in page.inner_text("#perm-tokens"))
         page.click("#char-cancel")
+
+        # new Batch-A controls
+        check("UI: backup + import-story buttons present",
+              page.locator("#backup-btn").count() == 1 and page.locator("#import-story-btn").count() == 1)
+        if page.locator("#tts-btn").is_visible():
+            before = page.inner_text("#tts-btn")
+            page.click("#tts-btn")
+            check("UI: TTS toggle changes label", page.inner_text("#tts-btn") != before)
 
         page.screenshot(path=str(TMP / "ui.png"), full_page=True)
         browser.close()

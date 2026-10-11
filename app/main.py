@@ -12,15 +12,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import os
+import zipfile
 from pathlib import Path
 from typing import List, Optional
 from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
@@ -63,6 +65,8 @@ class Character(BaseModel):
     post_history_instructions: str = ""
     lorebook_id: Optional[str] = None
     pov: str = ""
+    alternate_greetings: Optional[List[str]] = None
+    avatar_image: Optional[str] = None
 
 
 class StoryCreate(BaseModel):
@@ -122,6 +126,27 @@ class Persona(BaseModel):
 class ImportReq(BaseModel):
     filename: str = "card"
     data_b64: str
+
+
+class AvatarReq(BaseModel):
+    data_b64: str
+    ext: str = "png"
+
+
+_IMG_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
+MAX_AVATAR_BYTES = 8_000_000
+
+
+def _save_avatar(cid: str, raw: bytes, ext: str) -> str:
+    """Write a character's avatar image; returns the servable path."""
+    storage.AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    for p in storage.AVATAR_DIR.glob(f"{cid}.*"):  # drop any previous ext
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    (storage.AVATAR_DIR / f"{cid}.{ext}").write_bytes(raw)
+    return f"/avatars/{cid}.{ext}"
 
 
 # --- helpers ------------------------------------------------------------------
@@ -427,7 +452,45 @@ async def import_character(req: ImportReq):
             saved_book = storage.save_lorebook(lb)
             char["lorebook_id"] = saved_book["id"]
     saved = storage.save_character(char)
+    # The card PNG itself is the character art — use it as the avatar.
+    if raw[:8] == cards.PNG_SIG:
+        saved["avatar_image"] = _save_avatar(saved["id"], raw, "png")
+        saved = storage.save_character(saved)
     return saved
+
+
+@app.post("/api/characters/{cid}/avatar")
+async def set_avatar(cid: str, req: AvatarReq):
+    char = storage.get_character(cid)
+    if not char:
+        raise HTTPException(404, "Character not found")
+    ext = (req.ext or "png").lower().lstrip(".")
+    if ext == "jpeg":
+        ext = "jpg"
+    if ext not in _IMG_EXTS:
+        raise HTTPException(400, "Unsupported image type")
+    try:
+        raw = base64.b64decode(req.data_b64)
+    except Exception:
+        raise HTTPException(400, "Could not decode the image.")
+    if len(raw) > MAX_AVATAR_BYTES:
+        raise HTTPException(400, "Image too large (max 8 MB).")
+    char["avatar_image"] = _save_avatar(cid, raw, ext)
+    return storage.save_character(char)
+
+
+@app.delete("/api/characters/{cid}/avatar")
+async def clear_avatar(cid: str):
+    char = storage.get_character(cid)
+    if not char:
+        raise HTTPException(404, "Character not found")
+    for p in storage.AVATAR_DIR.glob(f"{cid}.*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    char["avatar_image"] = None
+    return storage.save_character(char)
 
 
 @app.get("/api/characters/{cid}/export")
@@ -458,6 +521,50 @@ async def get_story(sid: str):
     if not story:
         raise HTTPException(404, "Story not found")
     return story
+
+
+@app.get("/api/stories/{sid}/export")
+async def export_story(sid: str):
+    story = storage.get_story(sid)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    fname = (story.get("title") or "story").replace(" ", "_")
+    ascii_name = "".join(c for c in fname if c.isascii() and c not in '"\\') or "story"
+    return JSONResponse(story, headers={
+        "Content-Disposition":
+            f"attachment; filename=\"{ascii_name}.json\"; filename*=UTF-8''{quote(fname)}.json"})
+
+
+@app.post("/api/stories/import")
+async def import_story(req: ImportReq):
+    try:
+        obj = json.loads(base64.b64decode(req.data_b64).decode("utf-8", "ignore"))
+    except Exception:
+        raise HTTPException(400, "Could not read the story file.")
+    if not isinstance(obj, dict) or not isinstance(obj.get("messages"), list):
+        raise HTTPException(400, "Not a valid story export.")
+    obj.pop("id", None)  # assign a fresh id so imports never collide
+    obj.setdefault("summaries", [])
+    obj.setdefault("authors_note", {"text": "", "depth": 4, "role": "system"})
+    obj["title"] = str(obj.get("title") or "Imported story")
+    return storage.save_story(obj)
+
+
+@app.get("/api/backup")
+async def backup():
+    """Download every piece of local data (characters, stories, lorebooks,
+    personas, avatars) as a single zip, so a lost container never loses saves."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for d in (storage.CHAR_DIR, storage.STORY_DIR, storage.LORE_DIR,
+                  storage.PERSONA_DIR, storage.AVATAR_DIR):
+            if not d.exists():
+                continue
+            for f in d.rglob("*"):
+                if f.is_file():
+                    z.write(f, arcname=str(f.relative_to(storage.DATA)))
+    return Response(content=buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": 'attachment; filename="ai-roleplayer-backup.zip"'})
 
 
 @app.post("/api/stories")
@@ -614,6 +721,7 @@ async def remove_persona(pid: str):
 # --- static UI ----------------------------------------------------------------
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/avatars", StaticFiles(directory=str(storage.AVATAR_DIR)), name="avatars")
 
 
 @app.get("/")

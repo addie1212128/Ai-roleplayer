@@ -30,9 +30,10 @@ CHAR_DIR = DATA / "characters"
 STORY_DIR = DATA / "stories"
 LORE_DIR = DATA / "lorebooks"
 PERSONA_DIR = DATA / "personas"
+AVATAR_DIR = DATA / "avatars"
 PRESET_DIR = ROOT / "presets" / "characters"
 
-_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR)
+_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR)
 
 
 def _ensure_dirs() -> None:
