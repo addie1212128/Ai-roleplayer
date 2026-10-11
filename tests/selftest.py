@@ -62,6 +62,26 @@ def test_substitute():
     check("substitute single-pass (no re-substitution)", out2 == "{{user}} and Bob", out2)
 
 
+def test_paper_features():
+    character = {"name": "Rex", "description": "A pilot.", "personality": "Bold.", "scenario": "A hangar.",
+                 "career": "Astronaut", "age": "34", "traits": "brave, reckless",
+                 "speech_style": "clipped military jargon"}
+    story = {"messages": [{"role": "user", "content": "hi"}],
+             "scene": "Midnight on the launchpad, a storm rolling in.", "mood": "Tense"}
+    built = context.assemble_prompt(story, character, None, None, {"num_ctx": 8192, "inner_monologue": True})
+    allc = "\n".join(m["content"] for m in built["messages"])
+    check("paper: profile fields in prompt", "Career: Astronaut" in allc and "clipped military jargon" in allc)
+    check("paper: scene block injected", "Midnight on the launchpad" in allc)
+    check("paper: mood injected", "feeling Tense" in allc, allc[-200:])
+    check("paper: inner-monologue instruction present", "INNER MONOLOGUE" in allc and "((" in allc)
+    built2 = context.assemble_prompt(story, character, None, None, {"num_ctx": 8192})
+    allc2 = "\n".join(m["content"] for m in built2["messages"])
+    check("paper: inner monologue off by default", "INNER MONOLOGUE" not in allc2)
+    # empty profile -> no stray labels
+    plain = context.assemble_prompt({"messages": []}, {"name": "Q", "description": "d"}, None, None, {"num_ctx": 8192})
+    check("paper: no profile labels when empty", "Career:" not in plain["messages"][0]["content"])
+
+
 def test_storage_id_safety():
     saved = storage.save_persona({"id": "../../evil", "name": "n"})
     check("storage: unsafe id regenerated on save", storage._safe_id(saved["id"]))
@@ -511,7 +531,7 @@ def main():
     for fn in [test_samplers, test_strip_think, test_substitute, test_examples,
                test_lorebook, test_assemble_order_and_budget, test_splice_depth,
                test_macro_resolution, test_depth_zero_and_est, test_cards_hardening,
-               test_cards, test_rag, test_storage_atomic, test_storage_id_safety, test_integration]:
+               test_cards, test_rag, test_paper_features, test_storage_atomic, test_storage_id_safety, test_integration]:
         try:
             fn()
         except Exception as e:

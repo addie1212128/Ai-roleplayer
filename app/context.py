@@ -86,7 +86,7 @@ _DEFAULT_SYSTEM = """You are {{char}}, a real person within this collaborative f
 
 [CHARACTER]
 {{char}} — {description}
-Personality: {personality}
+Personality: {personality}{profile_block}
 
 [SCENE]
 {scenario}
@@ -103,6 +103,23 @@ def _pov_line(pov: str) -> str:
     if pov == "third":
         return " Maintain a third-person-limited perspective anchored to {{char}}."
     return ""  # empty: let the greeting set the voice (the PROSE line says to match it)
+
+
+# Structured, three-tier profile fields (SimsChat-style). Only non-empty ones
+# are rendered, so characters stay simple unless the author fills them in.
+_PROFILE_FIELDS = [
+    ("Age", "age"), ("Gender", "gender"), ("Career", "career"),
+    ("Aspiration", "aspiration"), ("Traits", "traits"), ("Skills", "skills"),
+    ("Speech style", "speech_style"), ("Relationships", "relationships"),
+    ("Living situation", "living"),
+]
+
+
+def _profile_block(character: dict) -> str:
+    lines = [f"{label}: {str(character.get(key)).strip()}"
+             for label, key in _PROFILE_FIELDS
+             if character.get(key) and str(character.get(key)).strip()]
+    return ("\n" + "\n".join(lines)) if lines else ""
 
 
 def build_system_block(character: dict, persona: Optional[dict]) -> str:
@@ -123,6 +140,7 @@ def build_system_block(character: dict, persona: Optional[dict]) -> str:
         "scenario": scenario or "(open scene)",
         "persona_block": persona_block,
         "pov_line": _pov_line(character.get("pov", "")),
+        "profile_block": _profile_block(character),
     }
     # Single-pass field substitution. We deliberately do NOT use str.format()
     # here: the template also carries {{char}}/{{user}} macros, and .format()
@@ -131,7 +149,7 @@ def build_system_block(character: dict, persona: Optional[dict]) -> str:
     # tokens leaves the macros intact for substitute() to handle later, and
     # never re-scans the inserted values.
     default = re.sub(
-        r"\{(description|personality|scenario|persona_block|pov_line)\}",
+        r"\{(description|personality|scenario|persona_block|pov_line|profile_block)\}",
         lambda m: fields[m.group(1)],
         _DEFAULT_SYSTEM,
     )
@@ -367,6 +385,13 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
 
     # --- fixed (stable-ish) head ---
     system_block = substitute(build_system_block(character, persona), char_name, user_name)
+    if settings.get("inner_monologue"):
+        system_block += (
+            f"\n\n[INNER MONOLOGUE] Reveal {char_name}'s private thoughts in double "
+            f"parentheses, e.g. ((I shouldn't trust this stranger.)) — brief, first-person, "
+            f"known only to {char_name}, and kept separate from spoken lines and *actions*."
+        )
+    scene = substitute((story.get("scene") or "").strip(), char_name, user_name)
 
     history_all = [
         {"role": m["role"], "content": strip_think(substitute(m.get("content", ""), char_name, user_name))}
@@ -393,6 +418,10 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
         depth_injections.append((4 if an_d is None else int(an_d),
                                  {"role": an.get("role", "system"), "content": f"[Author's note: {an_text}]"}))
 
+    mood = (story.get("mood") or "").strip()
+    if mood:
+        depth_injections.append((3, {"role": "system", "content": f"[Right now, {char_name} is feeling {mood}.]"}))
+
     phi = substitute((character.get("post_history_instructions") or "").strip(), char_name, user_name)
     if phi:
         depth_injections.append((0, {"role": "system", "content": phi}))
@@ -403,6 +432,8 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
 
     # --- token accounting for fixed pieces ---
     head: list[dict] = [{"role": "system", "content": system_block}]
+    if scene:
+        head.append({"role": "system", "content": "[Current scene]\n" + scene})
     if lore.get("before"):
         head.append({"role": "system", "content": lore["before"]})
     if summaries:

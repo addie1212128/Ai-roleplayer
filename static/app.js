@@ -53,7 +53,11 @@ const api = {
 
 // ---------- helpers ----------
 function escapeHtml(s) { return (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
-function formatContent(s) { return escapeHtml(s).replace(/\*([^*]+)\*/g, "<em>$1</em>"); }
+function formatContent(s) {
+  return escapeHtml(s)
+    .replace(/\(\(\s*([\s\S]+?)\s*\)\)/g, '<span class="thought">($1)</span>')  // ((inner thoughts))
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");                                       // *actions*
+}
 function stripThink(s) {
   s = (s || "").replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "");
   const low = s.toLowerCase();
@@ -152,7 +156,10 @@ function updateHeader() {
   $("#settings-btn").classList.toggle("hidden", !open);
   $("#composer").classList.toggle("hidden", !open);
   $("#an-bar").classList.toggle("hidden", !open);
-  if (open) $("#an-input").value = (state.story.authors_note || {}).text || "";
+  if (open) {
+    $("#an-input").value = (state.story.authors_note || {}).text || "";
+    $("#mood-select").value = state.story.mood || "";
+  }
   renderGroupBar();
 }
 
@@ -490,6 +497,8 @@ function openCharModal(char) {
   const lbSel = $("#c-lorebook");
   lbSel.innerHTML = `<option value="">None</option>` + state.lorebooks.map((b) => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join("");
   lbSel.value = g("lorebook_id");
+  const pf = { "c-age": "age", "c-gender": "gender", "c-career": "career", "c-aspiration": "aspiration", "c-traits": "traits", "c-skills": "skills", "c-speech": "speech_style", "c-relationships": "relationships", "c-living": "living" };
+  for (const [id, key] of Object.entries(pf)) $("#" + id).value = g(key);
   $("#char-delete").classList.toggle("hidden", !char);
   $("#char-export").classList.toggle("hidden", !char);
   updatePermTokens();
@@ -524,6 +533,11 @@ async function saveCharFromModal() {
     lorebook_id: $("#c-lorebook").value || null,
     alternate_greetings: parseAltGreetings($("#c-altgreet").value),
     avatar_image: state.editingCharImage,
+    age: $("#c-age").value.trim(), gender: $("#c-gender").value.trim(),
+    career: $("#c-career").value.trim(), aspiration: $("#c-aspiration").value.trim(),
+    traits: $("#c-traits").value.trim(), skills: $("#c-skills").value.trim(),
+    speech_style: $("#c-speech").value.trim(), relationships: $("#c-relationships").value.trim(),
+    living: $("#c-living").value.trim(),
   };
   await api.saveCharacter(char);
   closeCharModal();
@@ -623,6 +637,8 @@ async function openSettings() {
   set("#s-reppen", s.repeat_penalty); set("#s-repn", s.repeat_last_n);
   $("#s-rag").checked = !!s.rag_enabled;
   $("#s-embed").value = s.embed_model || "nomic-embed-text";
+  $("#s-inner").checked = !!s.inner_monologue;
+  $("#s-scene").value = state.story.scene || "";
   $("#settings-modal").classList.remove("hidden");
 }
 async function saveSettings() {
@@ -632,8 +648,9 @@ async function saveSettings() {
     top_p: parseFloat($("#s-topp").value), top_k: parseInt($("#s-topk").value),
     repeat_penalty: parseFloat($("#s-reppen").value), repeat_last_n: parseInt($("#s-repn").value),
     rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
+    inner_monologue: $("#s-inner").checked,
   };
-  const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings };
+  const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value };
   state.story = await api.storyMeta(state.story.id, patch);
   $("#settings-modal").classList.add("hidden");
   updateHeader();
@@ -803,6 +820,12 @@ function init() {
     $("#s-minp").value = p.min_p; $("#s-topp").value = p.top_p; $("#s-topk").value = p.top_k;
     $("#s-reppen").value = p.repeat_penalty; $("#s-repn").value = p.repeat_last_n;
   };
+
+  // mood (save on change)
+  $("#mood-select").addEventListener("change", async () => {
+    if (!state.story) return;
+    state.story = await api.storyMeta(state.story.id, { mood: $("#mood-select").value });
+  });
 
   // author's note (save on blur)
   $("#an-input").addEventListener("change", async () => {

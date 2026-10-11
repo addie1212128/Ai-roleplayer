@@ -68,6 +68,16 @@ class Character(BaseModel):
     pov: str = ""
     alternate_greetings: Optional[List[str]] = None
     avatar_image: Optional[str] = None
+    # Optional structured profile (SimsChat three-tier: pre-defined / personal / social)
+    age: str = ""
+    gender: str = ""
+    career: str = ""
+    aspiration: str = ""
+    traits: str = ""
+    skills: str = ""
+    speech_style: str = ""
+    relationships: str = ""
+    living: str = ""
 
 
 class StoryCreate(BaseModel):
@@ -89,6 +99,8 @@ class StoryMeta(BaseModel):
     lorebook_id: Optional[str] = None
     authors_note: Optional[dict] = None
     settings: Optional[dict] = None
+    mood: Optional[str] = None
+    scene: Optional[str] = None
 
 
 class ChatReq(BaseModel):
