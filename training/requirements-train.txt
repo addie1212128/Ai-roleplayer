@@ -1,0 +1,14 @@
+# Training env (Unsloth QLoRA SFT/DPO). Do NOT `pip install -r` this blindly!
+#
+# On Windows a bare `pip install torch` pulls a CPU-only wheel and training silently
+# runs on the CPU. Install a CUDA torch FIRST, or use the official installer. Follow
+# training/README.md → "Install the training env". In short:
+#
+#   Linux / WSL2:  uv pip install unsloth --torch-backend=auto
+#   Windows:       irm https://unsloth.ai/install.ps1 | iex
+#                  (or: pip install torch --index-url https://download.pytorch.org/whl/cu128
+#                       then: pip install unsloth ; pip install -U "triton-windows<3.7")
+#
+# Let `pip install unsloth` RESOLVE transformers/trl/peft/datasets/bitsandbytes/xformers/
+# triton — do NOT hand-upgrade them (Unsloth pins compatible ranges; e.g. it caps trl<=1.13).
+unsloth

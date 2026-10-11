@@ -1,0 +1,11 @@
+# Data-prep deps for prepare_data.py. (import_my_stories.py needs NOTHING — pure stdlib.)
+#
+# Keep `datasets` on 4.x: prepare_data.py loads via data_files / the json builder, which
+# dodges the datasets>=4.0 "loading scripts are no longer supported" breakage that kills
+# load_dataset("PygmalionAI/PIPPA", "pippa_deduped").
+#
+# Run `huggingface-cli login` before prepare_data.py — the PIPPA/LimaRP mirrors are gated
+# Not-For-All-Audiences and meta-llama/Llama-3.1 is a gated (license-accept) repo.
+datasets>=4.3
+huggingface_hub>=0.34
+datasketch>=1.6          # scalable MinHash near-dedup (falls back to pure-Python if absent)

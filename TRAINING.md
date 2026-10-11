@@ -11,6 +11,12 @@ swipes — runs on *your* brain instead of a stock one.
 > space move fast; links are at the bottom so you can re-check prices and model
 > picks before you spend money.
 
+> 🛠️ **The runnable toolkit is built** — this doc is the *strategy*; the
+> *scripts* live in **[`training/`](training/README.md)** (dataset prep, a
+> one-command importer for your own stories, the QLoRA trainer tuned for your
+> 20 GB card, DPO polish, and GGUF→Ollama export). Jump there when you're ready
+> to actually run it.
+
 ---
 
 ## First, the honest reality check ✋

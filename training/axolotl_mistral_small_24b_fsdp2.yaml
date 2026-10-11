@@ -1,0 +1,79 @@
+# Mistral Small 24B — QLoRA + FSDP2 across TWO GPUs (your end-of-month 20+32GB rig).
+#
+# For the 24B keeper, train with Axolotl (NOT train_sft.py): Unsloth's free tier is
+# single-GPU, so sharding a 24B across two cards needs FSDP2. Verified against
+# Axolotl 0.20.x (Oct 2026).
+#
+# Install (WSL2/Linux only — Axolotl has no native-Windows path; Python 3.12+, torch 2.13+):
+#   export UV_TORCH_BACKEND=cu130        # or cu128
+#   uv venv axolotl_env && source axolotl_env/bin/activate
+#   uv pip install --no-build-isolation axolotl[deepspeed]   # NOTE: there is NO 'flash-attn' extra
+#
+# Prepare data once (point Axolotl at the pre-blended file so the ratio stays explicit):
+#   python training/prepare_data.py --char-name "<your character>"
+#   # prepare_data writes {"messages": [...]} JSONL — perfect for type: chat_template below.
+#
+# Run (num_processes = number of GPUs = 2):
+#   axolotl preprocess training/axolotl_mistral_small_24b_fsdp2.yaml
+#   CUDA_VISIBLE_DEVICES=0,1 accelerate launch --num_processes 2 -m axolotl.cli.train \
+#       training/axolotl_mistral_small_24b_fsdp2.yaml
+#   axolotl merge-lora training/axolotl_mistral_small_24b_fsdp2.yaml \
+#       --lora-model-dir ./outputs/mistral-small-24b-qlora-fsdp
+#   # then GGUF/Ollama: training/export_gguf.py --merged-dir <merged> --template mistral --name my-roleplayer-24b
+
+base_model: mistralai/Mistral-Small-24B-Base-2501   # text model (MistralForCausalLM); NOT the 3.1/2503 multimodal
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+
+# --- QLoRA: 4-bit NF4 base, bf16 compute ---
+load_in_4bit: true
+adapter: qlora
+# With `bf16: true` + `adapter: qlora` + an FSDP block, Axolotl auto-sets the 4-bit
+# *storage* dtype to bfloat16 (FSDP can only shard same-float-dtype modules).
+# Do NOT add `bnb_4bit_compute_dtype:` — it is not a valid Axolotl key.
+lora_r: 32
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_linear: true
+
+# --- data: the pre-blended roleplay + teaching set from prepare_data.py ---
+datasets:
+  - path: training/data/train.jsonl
+    type: chat_template
+    field_messages: messages
+    roles_to_train: ["assistant"]      # response-only masking (the modern Axolotl default)
+chat_template: chatml                    # must match the model you actually train; Nemo/Mistral native is tekken
+dataset_prepared_path: last_run_prepared
+output_dir: ./outputs/mistral-small-24b-qlora-fsdp
+
+sequence_len: 2048                       # keep <=2048: the 20GB card binds first (see FSDP note below)
+sample_packing: true
+pad_to_sequence_len: true
+
+micro_batch_size: 1                      # mixed 20+32GB shards EQUALLY, so size for the 20GB card
+gradient_accumulation_steps: 8
+num_epochs: 1
+optimizer: adamw_torch_fused             # paged_adamw_8bit also valid
+lr_scheduler: cosine
+learning_rate: 0.0002
+warmup_ratio: 0.03
+
+bf16: true                               # requires Ampere+ on BOTH cards; use fp16 if either is pre-Ampere
+tf32: false
+gradient_checkpointing: true
+flash_attention: true
+
+# --- FSDP2 (current Axolotl supports ONLY FSDP2; `fsdp_version: 1` and a bare `fsdp:` list are rejected) ---
+fsdp_version: 2
+fsdp_config:
+  auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  transformer_layer_cls_to_wrap: MistralDecoderLayer   # confirm the decoder class for your exact checkpoint
+  reshard_after_forward: true            # == FSDP1 FULL_SHARD; lowest peak memory
+  state_dict_type: FULL_STATE_DICT
+  cpu_ram_efficient_loading: true
+  offload_params: false                  # set true (+ cpu_offload_pin_memory: false) ONLY if the 20GB card OOMs
+
+# The 20+32GB pair shards params/grads/optimizer-state EQUALLY, not by VRAM, so the
+# 20GB card OOMs first while ~12GB of the 32GB card sits idle. If you OOM: keep
+# micro_batch_size: 1, sequence_len <= 2048, gradient_checkpointing: true, then
+# offload_params: true. Both cards should be Ampere-or-newer on the same driver/CUDA.

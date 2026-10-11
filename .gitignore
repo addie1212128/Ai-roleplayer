@@ -8,6 +8,11 @@ env/
 # App data — the user's own characters & saved stories stay local
 data/
 
+# Training toolkit outputs — generated datasets, checkpoints, GGUFs (large/local)
+training/data/
+training/outputs/
+*.gguf
+
 # OS / editor noise
 .DS_Store
 Thumbs.db
