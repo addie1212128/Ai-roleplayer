@@ -42,6 +42,44 @@ So the realistic goal: **a personalized roleplay model, trained in an afternoon
 
 ---
 
+## 📍 Your setup → your exact path
+
+**Your rig:** Ryzen 9 7950X3D (16-core), 96 GB RAM, **20 GB VRAM now → ~52 GB**
+at end of month (adding a 32 GB card). You want the model to do **both** —
+*teach* you things *and* adapt to you. This is a genuinely strong
+home-training box; here's the plan tuned to it.
+
+**Right now (single 20 GB GPU → use Unsloth):**
+- 20 GB with QLoRA trains **7–8B** easily and handles **Mistral-Nemo 12B** with
+  gradient checkpointing + batch size 1–2 + ~4–8K training context. So your
+  *keeper* (12B) is home-trainable **today**, no cloud needed.
+- Your **96 GB RAM** makes the GGUF export step trivial (it only wants 32–64 GB),
+  and the 7950X3D chews through data prep. No bottleneck anywhere.
+- Plan: v0 plumbing run on **Llama 3.1 8B** (fast/cheap to shake out bugs), then
+  the real one on **Mistral-Nemo 12B**.
+
+**End of month (20 + 32 = ~52 GB, two GPUs → switch to Axolotl + FSDP-QLoRA):**
+- Dual-GPU unlocks **Mistral Small 24B** (companion-grade) QLoRA and fast 12B at
+  long context. With FSDP-QLoRA you *can* even attempt a **70B** run, though it's
+  tight and the mismatched 20+32 cards balance around the smaller one — so **24B
+  is your sweet spot**.
+- Tool swap: **Unsloth is single-GPU**, so use **Axolotl** (FSDP/DeepSpeed) to
+  drive both cards. Keep Unsloth for quick single-card experiments.
+
+**Making it do "both":** one model, two mechanisms —
+- *Teaches you* → **bake it into the fine-tune**: blend ~10–30% instruction /
+  educational data + a handful of tutor-style example dialogues into your RP
+  training mix.
+- *Adapts to you* → **don't fine-tune for this** — the app's **RAG memory**
+  already learns your stories live and updates instantly. Fine-tuning to
+  "remember new facts" is the catastrophic-forgetting trap (see Step 6).
+
+➡️ **Bottom line: one fine-tune for voice + teaching, RAG for the adapting.**
+Train a 12B on your 20 GB card now; graduate to 24B on the dual-GPU rig at
+month's end. You may never need to rent a cloud GPU at all. 🎉
+
+---
+
 ## The pipeline at a glance
 
 ```
