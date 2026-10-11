@@ -20,6 +20,32 @@ import zlib
 from typing import Optional
 
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
+MAX_DECOMPRESS = 4_000_000   # hard cap (4 MB) on any single decompressed chunk
+MAX_CARD_BYTES = 32_000_000  # reject uploads larger than 32 MB outright
+
+
+def _bounded_inflate(data: bytes):
+    """zlib-decompress with a hard output cap, to defuse zip bombs.
+
+    Returns the bytes, or None if the output would exceed the cap or the data
+    is not valid zlib.
+    """
+    try:
+        d = zlib.decompressobj()
+        out = d.decompress(data, MAX_DECOMPRESS)
+        if d.unconsumed_tail:          # more output remained past the cap
+            return None
+        out += d.flush()
+        return out if len(out) <= MAX_DECOMPRESS else None
+    except zlib.error:
+        return None
+
+
+def _as_int(v, default):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
 
 
 # ---------------------------------------------------------------------------
@@ -45,11 +71,9 @@ def _iter_png_text_chunks(data: bytes):
             if b"\x00" in body:
                 kw, rest = body.split(b"\x00", 1)
                 if rest:
-                    try:
-                        text = zlib.decompress(rest[1:]).decode("latin-1", "ignore")
-                        yield kw.decode("latin-1", "ignore"), text
-                    except Exception:
-                        pass
+                    raw = _bounded_inflate(rest[1:])  # rest[0] is the method byte
+                    if raw is not None:
+                        yield kw.decode("latin-1", "ignore"), raw.decode("latin-1", "ignore")
         elif ctype == b"iTXt":
             parts = body.split(b"\x00", 2)
             if len(parts) >= 3:
@@ -59,12 +83,11 @@ def _iter_png_text_chunks(data: bytes):
                 # rest = language\0 translated\0 text
                 sub = rest.split(b"\x00", 2)
                 text_bytes = sub[2] if len(sub) == 3 else rest
-                try:
-                    if comp_flag == b"\x01":
-                        text_bytes = zlib.decompress(text_bytes)
-                    yield kw.decode("latin-1", "ignore"), text_bytes.decode("utf-8", "ignore")
-                except Exception:
-                    pass
+                if comp_flag == b"\x01":
+                    text_bytes = _bounded_inflate(text_bytes)
+                    if text_bytes is None:
+                        continue
+                yield kw.decode("latin-1", "ignore"), text_bytes.decode("utf-8", "ignore")
         if ctype == b"IEND":
             break
 
@@ -165,7 +188,7 @@ def lorebook_from_character_book(book: dict, name: str) -> Optional[dict]:
             "constant": bool(e.get("constant", False)),
             "selective": bool(e.get("selective", False)),
             "selectiveLogic": "AND_ANY",
-            "order": e.get("insertion_order", e.get("order", 100)),
+            "order": _as_int(e.get("insertion_order", e.get("order", 100)), 100),
             "position": "before" if (e.get("position") in (None, "before_char", 0, "before")) else "after",
             "depth": e.get("depth", 4),
             "matchWholeWords": True,
@@ -184,10 +207,14 @@ def parse_card_bytes(data: bytes) -> dict:
 
     Raises ValueError if no card can be found.
     """
+    if len(data) > MAX_CARD_BYTES:
+        raise ValueError("Card file is too large.")
     if data[:8] == PNG_SIG:
         obj = extract_png_card(data)
         if obj is None:
             raise ValueError("No character card found embedded in this PNG.")
+        if not isinstance(obj, dict):
+            raise ValueError("Embedded card is not a JSON object.")
         return character_from_card(obj)
     # Try JSON.
     try:

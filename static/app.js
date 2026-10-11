@@ -184,6 +184,7 @@ async function chatAction(action, userText) {
   state.streaming = true; toggleSendStop(true);
   state.abort = new AbortController();
   let full = "";
+  let errorMsg = null;
 
   try {
     const resp = await fetch("/api/chat", {
@@ -204,17 +205,30 @@ async function chatAction(action, userText) {
         if (!line) continue;
         let obj; try { obj = JSON.parse(line); } catch { continue; }
         if (obj.token) { full += obj.token; tmpBubble.innerHTML = formatContent(stripThink(full)); scrollToBottom(); }
-        else if (obj.error) { tmpBubble.classList.remove("cursor"); tmpBubble.innerHTML = formatContent("⚠️ " + obj.error); }
+        else if (obj.error) { errorMsg = obj.error; tmpBubble.classList.remove("cursor"); tmpBubble.innerHTML = formatContent("⚠️ " + obj.error); }
         else if (obj.done) { updateCtxMeter(obj.prompt_tokens, obj.num_ctx); }
       }
     }
   } catch (e) {
-    if (e.name !== "AbortError") tmpBubble.innerHTML = formatContent("⚠️ " + e.message);
+    if (e.name !== "AbortError") { errorMsg = e.message; tmpBubble.innerHTML = formatContent("⚠️ " + e.message); }
   } finally {
     state.streaming = false; state.abort = null; toggleSendStop(false);
     await reloadStory();          // re-sync from the server (source of truth)
     refreshStories();
+    if (errorMsg) {
+      showToast("⚠️ " + errorMsg);
+      // The server doesn't persist a failed send, so give the user their text back.
+      if (action === "send" && userText) { const inp = $("#input"); inp.value = userText; inp.dispatchEvent(new Event("input")); }
+    }
   }
+}
+
+function showToast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.remove("hidden");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => t.classList.add("hidden"), 6000);
 }
 
 function swipe(i, dir) {
@@ -226,7 +240,7 @@ function swipe(i, dir) {
   id = Math.max(0, Math.min(swipes.length - 1, id + dir));
   m.swipe_id = id; m.content = swipes[id];
   renderMessages();
-  api.selectSwipe(state.story.id, i, id).catch(() => {});
+  api.selectSwipe(state.story.id, i, id).catch(() => reloadStory());  // resync if the server rejected it
 }
 
 async function deleteFrom(i) {
@@ -438,7 +452,7 @@ function renderLoreEntries() {
             <option value="after" ${e.position === "after" ? "selected" : ""}>Near end (stronger)</option>
           </select>
         </label>
-        <label class="inline">Priority <input type="number" data-k="order" value="${e.order != null ? e.order : 100}" style="width:70px"/></label>
+        <label class="inline">Priority <input type="number" data-k="order" value="${escapeHtml(String(e.order != null ? e.order : 100))}" style="width:70px"/></label>
       </div>`;
     row.querySelector(".del").onclick = () => { state.loreDraft.entries.splice(idx, 1); renderLoreEntries(); };
     row.querySelectorAll("[data-k]").forEach((inp) => {

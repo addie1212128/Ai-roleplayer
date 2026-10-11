@@ -171,6 +171,64 @@ def test_cards():
     check("card: export envelope", exported["spec"] == "chara_card_v2" and exported["data"]["first_mes"] == "yo")
 
 
+def test_macro_resolution():
+    # Regression: default system prompt must resolve {{char}}/{{user}}, not leak {char}/{user}.
+    character = {"name": "Zara", "description": "A rogue.", "personality": "Sly.", "scenario": "A heist."}
+    persona = {"name": "Max", "description": "A nervous guard."}
+    built = context.assemble_prompt({"messages": [{"role": "user", "content": "hi"}]},
+                                    character, persona, None, {"num_ctx": 8192})
+    sysmsg = built["messages"][0]["content"]
+    check("macro: char name resolved", "You are Zara" in sysmsg, sysmsg[:40])
+    check("macro: no {char} leak", "{char}" not in sysmsg and "{{char}}" not in sysmsg)
+    check("macro: no {user} leak", "{user}" not in sysmsg and "{{user}}" not in sysmsg)
+    check("macro: persona name present", "Max" in sysmsg)
+    reminder = [m for m in built["messages"] if "Stay in character" in m["content"]][0]["content"]
+    check("macro: reminder fully resolved", "Zara" in reminder and "Max" in reminder and "{" not in reminder)
+    # override with {{original}} still works and resolves
+    c2 = {**character, "system_prompt": "ONLY: {{original}}"}
+    b2 = context.assemble_prompt({"messages": []}, c2, persona, None, {"num_ctx": 8192})
+    check("macro: override {{original}} expands", "ONLY:" in b2["messages"][0]["content"] and "You are Zara" in b2["messages"][0]["content"])
+
+
+def test_depth_zero_and_est():
+    story = {"messages": [{"role": "assistant", "content": "a"}, {"role": "user", "content": "b"}],
+             "authors_note": {"text": "Be tense.", "depth": 0, "role": "system"}}
+    built = context.assemble_prompt(story, {"name": "C", "description": "d"}, None, None, {"num_ctx": 8192})
+    contents = [m["content"] for m in built["messages"]]
+    b_idx = max(i for i, c in enumerate(contents) if c == "b")
+    an_idx = [i for i, c in enumerate(contents) if "Author's note" in c][0]
+    check("AN depth=0 lands after last history msg", an_idx > b_idx, f"an={an_idx} b={b_idx}")
+    check("est_tokens ascii ~ len/4", context.est_tokens("abcdefgh") == 2)
+    check("est_tokens cjk heavier", context.est_tokens("日本語テスト") == 6)
+    check("strip unclosed <thinking>", context.strip_think("Hi <thinking>pondering") == "Hi")
+    check("strip closed <thinking>", context.strip_think("<thinking>x</thinking>Yo") == "Yo")
+    lb = {"entries": [{"keys": ["日本"], "content": "Japan lore", "matchWholeWords": True}]}
+    res = context.scan_lorebook(lb, [{"role": "user", "content": "私は日本に行く"}], 1000)
+    check("lore CJK key matches (substring fallback)", "Japan lore" in res["before"])
+
+
+def test_cards_hardening():
+    import struct as _st, zlib as _zl, time as _t
+    # non-object JSON embedded in a PNG must raise ValueError, not crash with 500
+    png = _make_png_with_card([1, 2, 3])
+    try:
+        cards.parse_card_bytes(png); ok = False
+    except ValueError:
+        ok = True
+    check("cards: non-object PNG JSON -> ValueError", ok)
+    # zip bomb: a zTXt chunk inflating past the cap must be defused (no hang/OOM)
+    comp = _zl.compress(b"\x00" * 5_000_000)
+
+    def chunk(typ, data):
+        return _st.pack(">I", len(data)) + typ + data + _st.pack(">I", _zl.crc32(typ + data) & 0xffffffff)
+
+    ztxt = b"chara\x00\x00" + comp  # keyword\0 + method byte + compressed
+    bomb = cards.PNG_SIG + chunk(b"IHDR", b"\x00" * 13) + chunk(b"zTXt", ztxt) + chunk(b"IEND", b"")
+    t0 = _t.time()
+    got = cards.extract_png_card(bomb)
+    check("cards: zip-bomb defused (no card, fast)", got is None and (_t.time() - t0) < 2.0)
+
+
 def test_storage_atomic():
     storage.seed_presets()
     c = storage.save_character({"name": "Tmp", "description": "x", "custom_field": 42})
@@ -182,6 +240,7 @@ def test_storage_atomic():
 # ============================================================ integration test
 
 _last_payload = {}
+_fake_ctl = {"empty": False}
 
 
 def _start_fake_ollama(port):
@@ -204,6 +263,10 @@ def _start_fake_ollama(port):
             return JSONResponse({"message": {"content": "- A thing happened."}, "done": True})
 
         async def gen():
+            if _fake_ctl.get("empty"):   # simulate a failed/empty generation
+                yield json.dumps({"message": {"content": ""}, "done": True,
+                                  "prompt_eval_count": 5, "eval_count": 0}) + "\n"
+                return
             for tok in ["*She ", "smiles.* ", "\"Hello", " there.\""]:
                 yield json.dumps({"message": {"content": tok}, "done": False}) + "\n"
             yield json.dumps({"message": {"content": ""}, "done": True,
@@ -277,6 +340,18 @@ def test_integration():
     story4 = client.get(f"/api/stories/{story['id']}").json()
     check("api: regenerate keeps length", len(story4["messages"]) == 3, str(len(story4["messages"])))
 
+    # regenerate FAILURE must NOT lose the previous reply (data-loss fix)
+    prior = client.get(f"/api/stories/{story['id']}").json()["messages"][-1]["content"]
+    _fake_ctl["empty"] = True
+    client.post("/api/chat", json={"story_id": story["id"], "action": "regenerate"})
+    after = client.get(f"/api/stories/{story['id']}").json()["messages"]
+    check("api: failed regenerate preserves prior reply", len(after) == 3 and after[-1]["content"] == prior, f"len={len(after)}")
+    # send FAILURE must NOT persist an orphan user turn (deferred-commit fix)
+    client.post("/api/chat", json={"story_id": story["id"], "action": "send", "user_message": "doomed line"})
+    after2 = client.get(f"/api/stories/{story['id']}").json()["messages"]
+    check("api: failed send leaves no orphan user turn", len(after2) == 3, f"len={len(after2)}")
+    _fake_ctl["empty"] = False
+
     # edit message
     r = client.put(f"/api/stories/{story['id']}/message/1", json={"content": "I warm my hands."})
     check("api: edit message", client.get(f"/api/stories/{story['id']}").json()["messages"][1]["content"] == "I warm my hands.")
@@ -304,6 +379,7 @@ def main():
     print("Running AI Roleplayer backend self-test...\n")
     for fn in [test_samplers, test_strip_think, test_substitute, test_examples,
                test_lorebook, test_assemble_order_and_budget, test_splice_depth,
+               test_macro_resolution, test_depth_zero_and_est, test_cards_hardening,
                test_cards, test_storage_atomic, test_integration]:
         try:
             fn()

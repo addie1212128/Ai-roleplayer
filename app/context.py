@@ -27,7 +27,12 @@ from typing import Optional
 def est_tokens(text: str) -> int:
     if not text:
         return 0
-    return max(1, len(text) // 4)
+    # ASCII averages ~4 chars/token; CJK and other wide scripts are closer to
+    # ~1 token per character, so count them heavier to avoid undercounting
+    # (an undercount would silently overflow num_ctx).
+    ascii_chars = sum(1 for c in text if ord(c) < 0x80)
+    wide_chars = len(text) - ascii_chars
+    return max(1, ascii_chars // 4 + wide_chars)
 
 
 def _msgs_tokens(msgs: list[dict]) -> int:
@@ -61,10 +66,11 @@ def strip_think(text: str) -> str:
     if not text:
         return text or ""
     cleaned = _THINK_RE.sub("", text)
-    # An unclosed opener (stream cut mid-thought) — drop from it to the end.
-    low = cleaned.lower()
-    if "<think>" in low and "</think>" not in low:
-        cleaned = cleaned[: low.index("<think>")]
+    # Any opener still present (either spelling) is unclosed — a stream cut
+    # mid-thought. Drop from it to the end.
+    m = re.search(r"<think(?:ing)?>", cleaned, re.IGNORECASE)
+    if m:
+        cleaned = cleaned[: m.start()]
     return cleaned.strip()
 
 
@@ -107,25 +113,28 @@ def build_system_block(character: dict, persona: Optional[dict]) -> str:
     else:
         persona_block = "\n"
 
+    fields = {
+        "description": desc or "(no description)",
+        "personality": personality or "(unspecified)",
+        "scenario": scenario or "(open scene)",
+        "persona_block": persona_block,
+        "pov_line": _pov_line(character.get("pov", "")),
+    }
+    # Single-pass field substitution. We deliberately do NOT use str.format()
+    # here: the template also carries {{char}}/{{user}} macros, and .format()
+    # would collapse those to {char}/{user}, which substitute() (double-brace
+    # only) would then never resolve. A single re.sub over the exact field
+    # tokens leaves the macros intact for substitute() to handle later, and
+    # never re-scans the inserted values.
+    default = re.sub(
+        r"\{(description|personality|scenario|persona_block|pov_line)\}",
+        lambda m: fields[m.group(1)],
+        _DEFAULT_SYSTEM,
+    )
     override = (character.get("system_prompt") or "").strip()
     if override:
-        default = _DEFAULT_SYSTEM.format(
-            description=desc or "(no description)",
-            personality=personality or "(unspecified)",
-            scenario=scenario or "(open scene)",
-            persona_block=persona_block,
-            pov_line=_pov_line(character.get("pov", "")),
-        )
-        block = override.replace("{{original}}", default)
-    else:
-        block = _DEFAULT_SYSTEM.format(
-            description=desc or "(no description)",
-            personality=personality or "(unspecified)",
-            scenario=scenario or "(open scene)",
-            persona_block=persona_block,
-            pov_line=_pov_line(character.get("pov", "")),
-        )
-    return block
+        return override.replace("{{original}}", default)
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +186,10 @@ def _key_matches(text_lower: str, key: str, whole_words: bool) -> bool:
     key = (key or "").strip().lower()
     if not key:
         return False
-    if whole_words:
+    # Whole-word matching only makes sense for ASCII word-ish keys. For CJK
+    # (no spaces between words) or keys bounded by punctuation, \b never fires,
+    # so fall back to substring matching.
+    if whole_words and key.isascii() and key[0].isalnum() and key[-1].isalnum():
         return re.search(r"\b" + re.escape(key) + r"\b", text_lower) is not None
     return key in text_lower
 
@@ -222,7 +234,8 @@ def scan_lorebook(lorebook: Optional[dict], recent_msgs: list[dict], budget_toke
     if not entries:
         return result
 
-    scan_depth = int(lorebook.get("scanDepth", 4) or 4)
+    sd = lorebook.get("scanDepth")
+    scan_depth = 4 if sd is None else int(sd)
     scanned = recent_msgs[-scan_depth:] if scan_depth > 0 else recent_msgs
     text_lower = "\n".join(m.get("content", "") for m in scanned).lower()
 
@@ -245,7 +258,8 @@ def scan_lorebook(lorebook: Optional[dict], recent_msgs: list[dict], budget_toke
         result["fired"].append(e.get("name") or content[:30])
         pos = (e.get("position") or "before").lower()
         if pos in ("after", "at_depth", "after_char"):
-            depth_parts.append((int(e.get("depth", 4) or 4), content))
+            ed = e.get("depth")
+            depth_parts.append((4 if ed is None else int(ed), content))
         else:
             before_parts.append(content)
 
@@ -343,7 +357,8 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
     an = story.get("authors_note") or {}
     an_text = substitute((an.get("text") or "").strip(), char_name, user_name)
     if an_text:
-        depth_injections.append((int(an.get("depth", 4) or 4),
+        an_d = an.get("depth")
+        depth_injections.append((4 if an_d is None else int(an_d),
                                  {"role": an.get("role", "system"), "content": f"[Author's note: {an_text}]"}))
 
     phi = substitute((character.get("post_history_instructions") or "").strip(), char_name, user_name)

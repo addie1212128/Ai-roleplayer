@@ -238,19 +238,20 @@ async def chat(req: ChatReq):
                 return
 
             action = req.action
-            # Mutate history for the action and choose the context to send.
+            # Choose the context to send WITHOUT persisting any destructive
+            # mutation first. Nothing is written to disk until a clean reply
+            # exists, so a failed, empty, or aborted generation never loses the
+            # previous reply (regenerate) or leaves an orphaned user turn (send).
             if action == "send":
                 if not (req.user_message or "").strip():
                     yield _sse({"error": "Empty message."})
                     return
                 msgs.append({"role": "user", "content": req.user_message.strip()})
-                storage.save_story(story)  # persist the user turn immediately
                 ctx_msgs = msgs
             elif action == "regenerate":
-                if msgs and msgs[-1].get("role") == "assistant":
-                    msgs.pop()
-                    storage.save_story(story)
-                ctx_msgs = msgs
+                # Replace a trailing assistant reply, or generate one for a
+                # dangling user turn. The pop happens only on success, below.
+                ctx_msgs = msgs[:-1] if (msgs and msgs[-1].get("role") == "assistant") else msgs
             elif action == "swipe":
                 if not (msgs and msgs[-1].get("role") == "assistant"):
                     yield _sse({"error": "Nothing to swipe yet."})
@@ -317,8 +318,14 @@ async def chat(req: ChatReq):
                                      "lower the temperature, or pick another model."})
                 return
 
-            # Commit the result to the right place.
-            if action in ("send", "regenerate"):
+            # Commit the result to the right place (first write to disk).
+            if action == "send":
+                msgs.append({"role": "assistant", "content": clean,
+                             "swipes": [clean], "swipe_id": 0})
+                idx = len(msgs) - 1
+            elif action == "regenerate":
+                if msgs and msgs[-1].get("role") == "assistant":
+                    msgs.pop()               # drop old reply only now that we have a new one
                 msgs.append({"role": "assistant", "content": clean,
                              "swipes": [clean], "swipe_id": 0})
                 idx = len(msgs) - 1
@@ -465,6 +472,7 @@ async def create_story(story: StoryCreate):
 async def remove_story(sid: str):
     if not storage.delete_story(sid):
         raise HTTPException(404, "Story not found")
+    _story_locks.pop(sid, None)  # don't leak the per-story lock
     return {"ok": True}
 
 
