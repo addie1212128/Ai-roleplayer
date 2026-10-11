@@ -19,9 +19,21 @@ const prefs = {
 };
 
 // ---------- API ----------
-async function jget(u) { const r = await fetch(u); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText); return r.json(); }
+// Access token (only present when the server was bound beyond loopback). Captured
+// from ?token=… on first load, kept in sessionStorage, sent on every /api call.
+const TOKEN = (() => {
+  try {
+    const u = new URLSearchParams(location.search).get("token");
+    if (u) { sessionStorage.setItem("rp_token", u); return u; }
+    return sessionStorage.getItem("rp_token") || "";
+  } catch { return ""; }
+})();
+function authH(h) { return TOKEN ? { ...(h || {}), "X-RP-Token": TOKEN } : (h || {}); }
+function tokenQ() { return TOKEN ? ("?token=" + encodeURIComponent(TOKEN)) : ""; }
+
+async function jget(u) { const r = await fetch(u, { headers: authH() }); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText); return r.json(); }
 async function jsend(u, method, body) {
-  const r = await fetch(u, { method, headers: { "Content-Type": "application/json" }, body: body != null ? JSON.stringify(body) : undefined });
+  const r = await fetch(u, { method, headers: authH({ "Content-Type": "application/json" }), body: body != null ? JSON.stringify(body) : undefined });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
   return r.json();
 }
@@ -30,25 +42,25 @@ const api = {
   presets: (m) => jget("/api/presets?model=" + encodeURIComponent(m || "")),
   characters: () => jget("/api/characters"),
   saveCharacter: (c) => jsend(c.id ? `/api/characters/${c.id}` : "/api/characters", c.id ? "PUT" : "POST", c),
-  deleteCharacter: (id) => fetch(`/api/characters/${id}`, { method: "DELETE" }),
+  deleteCharacter: (id) => fetch(`/api/characters/${id}`, { method: "DELETE", headers: authH() }),
   importCharacter: (filename, data_b64) => jsend("/api/characters/import", "POST", { filename, data_b64 }),
   setAvatar: (cid, data_b64, ext) => jsend(`/api/characters/${cid}/avatar`, "POST", { data_b64, ext }),
-  clearAvatarImg: (cid) => fetch(`/api/characters/${cid}/avatar`, { method: "DELETE" }),
+  clearAvatarImg: (cid) => fetch(`/api/characters/${cid}/avatar`, { method: "DELETE", headers: authH() }),
   stories: () => jget("/api/stories"),
   getStory: (id) => jget(`/api/stories/${id}`),
   createStory: (s) => jsend("/api/stories", "POST", s),
   importStory: (filename, data_b64) => jsend("/api/stories/import", "POST", { filename, data_b64 }),
-  deleteStory: (id) => fetch(`/api/stories/${id}`, { method: "DELETE" }),
+  deleteStory: (id) => fetch(`/api/stories/${id}`, { method: "DELETE", headers: authH() }),
   storyMeta: (id, patch) => jsend(`/api/stories/${id}/meta`, "PUT", patch),
   editMessage: (id, idx, content) => jsend(`/api/stories/${id}/message/${idx}`, "PUT", { content }),
   selectSwipe: (id, idx, swipe_id) => jsend(`/api/stories/${id}/message/${idx}/swipe`, "PUT", { swipe_id }),
-  deleteFrom: (id, idx) => fetch(`/api/stories/${id}/message/${idx}`, { method: "DELETE" }),
+  deleteFrom: (id, idx) => fetch(`/api/stories/${id}/message/${idx}`, { method: "DELETE", headers: authH() }),
   personas: () => jget("/api/personas"),
   savePersona: (p) => jsend(p.id ? `/api/personas/${p.id}` : "/api/personas", p.id ? "PUT" : "POST", p),
-  deletePersona: (id) => fetch(`/api/personas/${id}`, { method: "DELETE" }),
+  deletePersona: (id) => fetch(`/api/personas/${id}`, { method: "DELETE", headers: authH() }),
   lorebooks: () => jget("/api/lorebooks"),
   saveLorebook: (b) => jsend(b.id ? `/api/lorebooks/${b.id}` : "/api/lorebooks", b.id ? "PUT" : "POST", b),
-  deleteLorebook: (id) => fetch(`/api/lorebooks/${id}`, { method: "DELETE" }),
+  deleteLorebook: (id) => fetch(`/api/lorebooks/${id}`, { method: "DELETE", headers: authH() }),
 };
 
 // ---------- helpers ----------
@@ -239,7 +251,7 @@ async function chatAction(action, userText, charId) {
 
   try {
     const resp = await fetch("/api/chat", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: authH({ "Content-Type": "application/json" }),
       body: JSON.stringify({ story_id: state.story.id, action, user_message: userText || null, char_id: charId || null, settings: {} }),
       signal: state.abort.signal,
     });
@@ -435,7 +447,7 @@ function renderStories() {
       emoji: "📖", title: s.title, sub: `${s.character_name || ""} · ${s.turns} msgs`,
       onClick: () => openStory(s.id),
       actions: [
-        { label: "⤓", title: "Export", fn: () => window.open(`/api/stories/${s.id}/export`, "_blank") },
+        { label: "⤓", title: "Export", fn: () => window.open(`/api/stories/${s.id}/export${tokenQ()}`, "_blank") },
         { label: "🗑", title: "Delete", cls: "del", fn: async () => {
           if (!confirm(`Delete "${s.title}"?`)) return;
           await api.deleteStory(s.id);
@@ -729,7 +741,7 @@ function init() {
     };
     reader.readAsDataURL(f);
   });
-  $("#backup-btn").onclick = () => window.open("/api/backup", "_blank");
+  $("#backup-btn").onclick = () => window.open("/api/backup" + tokenQ(), "_blank");
 
   // greeting chooser
   $("#greet-cancel").onclick = () => $("#greet-modal").classList.add("hidden");
@@ -777,7 +789,7 @@ function init() {
     if (!state.editingCharId || !confirm("Delete this character? Saved stories keep working.")) return;
     await api.deleteCharacter(state.editingCharId); closeCharModal(); await refreshCharacters();
   };
-  $("#char-export").onclick = () => { if (state.editingCharId) window.open(`/api/characters/${state.editingCharId}/export`, "_blank"); };
+  $("#char-export").onclick = () => { if (state.editingCharId) window.open(`/api/characters/${state.editingCharId}/export${tokenQ()}`, "_blank"); };
   bindModal("#char-modal", []);
 
   // import

@@ -22,7 +22,7 @@ from typing import List, Optional
 from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
@@ -31,11 +31,23 @@ from . import cards, context, rag, storage
 from .samplers import DEFAULTS, build_options, preset_for
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+# When set (run.py sets it automatically if bound beyond loopback), every /api/
+# request must carry this token — so a non-loopback bind can't expose all data.
+API_TOKEN = os.environ.get("RP_TOKEN", "").strip()
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
 
 app = FastAPI(title="AI Roleplayer")
 storage.seed_presets()
+
+
+@app.middleware("http")
+async def _require_token(request: Request, call_next):
+    if API_TOKEN and request.url.path.startswith("/api/"):
+        tok = request.headers.get("x-rp-token") or request.query_params.get("token")
+        if tok != API_TOKEN:
+            return JSONResponse({"detail": "Unauthorized — access token required."}, status_code=401)
+    return await call_next(request)
 
 # One lock per story serializes read-modify-write (incl. the whole generation),
 # so two turns on the same story can't interleave. Different stories run free.
@@ -324,6 +336,9 @@ async def chat(req: ChatReq):
                 if not (req.user_message or "").strip():
                     yield _sse({"error": "Empty message."})
                     return
+                if len(req.user_message) > 100_000:
+                    yield _sse({"error": "Message is too long (max 100k characters)."})
+                    return
                 msgs.append({"role": "user", "content": req.user_message.strip()})
                 ctx_msgs = msgs
             elif action == "regenerate":
@@ -392,8 +407,11 @@ async def chat(req: ChatReq):
 
             full = ""
             prompt_tokens = eval_tokens = None
+            # read timeout = max gap between tokens; a stalled Ollama then raises
+            # (surfacing an error + releasing the per-story lock) instead of hanging forever.
+            chat_timeout = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=None)
             try:
-                async with httpx.AsyncClient(timeout=None) as client:
+                async with httpx.AsyncClient(timeout=chat_timeout) as client:
                     async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as r:
                         if r.status_code != 200:
                             body = await r.aread()
@@ -448,6 +466,8 @@ async def chat(req: ChatReq):
                 last = msgs[-1]
                 last.setdefault("swipes", [last.get("content", "")])
                 last["swipes"].append(clean)
+                if len(last["swipes"]) > 10:        # bound stored alternates
+                    last["swipes"] = last["swipes"][-10:]
                 last["swipe_id"] = len(last["swipes"]) - 1
                 last["content"] = clean
                 _attach(last)   # keep attribution matching the card actually used
@@ -629,7 +649,13 @@ async def export_story(sid: str):
 @app.post("/api/stories/import")
 async def import_story(req: ImportReq):
     try:
-        obj = json.loads(base64.b64decode(req.data_b64).decode("utf-8", "ignore"))
+        raw = base64.b64decode(req.data_b64)
+    except Exception:
+        raise HTTPException(400, "Could not read the story file.")
+    if len(raw) > 25_000_000:
+        raise HTTPException(400, "Story file is too large.")
+    try:
+        obj = json.loads(raw.decode("utf-8", "ignore"))
     except Exception:
         raise HTTPException(400, "Could not read the story file.")
     if not isinstance(obj, dict) or not isinstance(obj.get("messages"), list):

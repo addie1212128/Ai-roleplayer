@@ -46,6 +46,10 @@ def test_samplers():
     opts = build_options({"num_ctx": 16384, "temperature": 1.0, "keep_alive": "30m", "model": "x", "bogus": 1})
     check("build_options keeps num_ctx", opts.get("num_ctx") == 16384)
     check("build_options drops non-ollama keys", "keep_alive" not in opts and "model" not in opts and "bogus" not in opts)
+    clamped = build_options({"num_ctx": 10_000_000, "num_predict": 99999, "top_k": 99999, "temperature": 50})
+    check("clamp: num_ctx capped", clamped["num_ctx"] == 131072)
+    check("clamp: num_predict capped", clamped["num_predict"] == 8192)
+    check("clamp: temperature capped", clamped["temperature"] == 3.0)
 
 
 def test_strip_think():
@@ -96,6 +100,13 @@ def test_examples():
     roles = [m["role"] for m in msgs]
     check("examples parsed into 4 msgs", len(msgs) == 4, f"got {len(msgs)}")
     check("examples role order", roles == ["user", "assistant", "user", "assistant"], str(roles))
+    # examples are injected as ONE fenced system block, never as fake chat turns
+    built = context.assemble_prompt({"messages": [{"role": "user", "content": "hi"}]},
+                                    {"name": "Aria", "description": "d", "example_dialogue": ex}, None, None, {"num_ctx": 8192})
+    check("examples: injected as one system block",
+          any(m["role"] == "system" and "Example dialogue" in m["content"] for m in built["messages"]))
+    check("examples: not injected as fake assistant turns",
+          sum(1 for m in built["messages"] if m["role"] == "assistant") == 0)
 
 
 def test_lorebook():
@@ -383,6 +394,14 @@ def test_integration():
     r = client.get("/api/models")
     check("api: models ok", r.json()["ok"] and "mistral-nemo:12b" in r.json()["models"])
 
+    # token auth: when API_TOKEN is set, /api requires it; the page still loads
+    main.API_TOKEN = "secret123"
+    check("auth: /api without token -> 401", client.get("/api/models").status_code == 401)
+    check("auth: /api with header token -> ok", client.get("/api/models", headers={"X-RP-Token": "secret123"}).json()["ok"])
+    check("auth: /api with query token -> ok", client.get("/api/models?token=secret123").json()["ok"])
+    check("auth: page loads without token", client.get("/").status_code == 200)
+    main.API_TOKEN = ""
+
     # character + story
     char = client.post("/api/characters", json={"name": "Aria", "description": "Tavern keeper.",
                                                  "personality": "Warm.", "scenario": "Rainy night.",
@@ -433,6 +452,8 @@ def test_integration():
     after2 = client.get(f"/api/stories/{story['id']}").json()["messages"]
     check("api: failed send leaves no orphan user turn", len(after2) == 3, f"len={len(after2)}")
     _fake_ctl["empty"] = False
+    r_big = client.post("/api/chat", json={"story_id": story["id"], "action": "send", "user_message": "x" * 100001})
+    check("api: oversized message rejected", "too long" in r_big.text)
 
     # export with a non-ASCII name must not 500 (Latin-1 header fix)
     jp = client.post("/api/characters", json={"name": "ゼロ丸", "description": "d", "greeting": "hi"}).json()

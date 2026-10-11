@@ -200,6 +200,17 @@ def parse_examples(mes_example: str, char_name: str, user_name: str) -> list[dic
     return msgs
 
 
+def examples_block_text(mes_example: str, char_name: str, user_name: str) -> str:
+    """Render example dialogue as ONE fenced system block (not fake chat turns),
+    so it can't break user/assistant alternation or bleed into the live scene."""
+    turns = parse_examples(mes_example, char_name, user_name)
+    if not turns:
+        return ""
+    lines = [f"{user_name if m['role'] == 'user' else char_name}: {m['content']}" for m in turns]
+    return (f"[Example dialogue — {char_name}'s voice and style, for reference only, "
+            f"NOT part of the current scene]\n" + "\n".join(lines))
+
+
 # ---------------------------------------------------------------------------
 # lorebook / world info scanning
 # ---------------------------------------------------------------------------
@@ -403,7 +414,7 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
     lore = scan_lorebook(lorebook, history_all, lore_budget)
 
     summaries = summaries_block(story.get("summaries", []))
-    examples = parse_examples(character.get("example_dialogue", ""), char_name, user_name)
+    examples = examples_block_text(character.get("example_dialogue", ""), char_name, user_name)
     pin_examples = bool(settings.get("pin_examples", False))
 
     # --- depth-injected, built now but spliced after budgeting ---
@@ -442,11 +453,11 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
         head.append({"role": "system", "content": rag_block})
 
     fixed_tokens = _msgs_tokens(head) + _msgs_tokens([m for _, m in depth_injections])
-    example_tokens = _msgs_tokens(examples)
+    example_tokens = (est_tokens(examples) + 4) if examples else 0
 
     dropped = {"examples": False, "history_trimmed": 0, "lore_dropped": lore.get("dropped", [])}
 
-    # Decide whether examples fit.
+    # Decide whether the example block fits.
     include_examples = bool(examples)
     avail_for_history = budget - fixed_tokens
     if include_examples and (pin_examples or example_tokens <= avail_for_history * 0.4):
@@ -471,7 +482,7 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
     # --- assemble ---
     messages: list[dict] = list(head)
     if include_examples:
-        messages.extend(examples)
+        messages.append({"role": "system", "content": examples})
     messages.extend(_splice_depth(history, depth_injections))
 
     debug = {
