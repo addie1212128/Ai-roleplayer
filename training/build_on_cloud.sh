@@ -57,7 +57,8 @@ fi
 echo "== build llama.cpp (for GGUF conversion) =="
 if [ ! -x "$LLAMA_DIR/build/bin/llama-quantize" ]; then
   [ -d "$LLAMA_DIR/.git" ] || git clone https://github.com/ggml-org/llama.cpp "$LLAMA_DIR"
-  ( cd "$LLAMA_DIR" && python3 -m pip install -r requirements.txt \
+  # The uv venv ships without pip, so bootstrap it before llama.cpp's requirements.
+  ( cd "$LLAMA_DIR" && python3 -m ensurepip --upgrade && python3 -m pip install -r requirements.txt \
       && cmake -B build -DGGML_CUDA=ON && cmake --build build --config Release -j )
 fi
 
