@@ -700,6 +700,49 @@ def test_integration():
     check("api: export header strips control chars",
           ctr.status_code == 200 and "\n" not in cd and "\r" not in cd and "BadName.md" in cd, repr(cd[:90]))
 
+    # --- tags + pinning + scene backgrounds ---------------------------------
+    # Story tags: set via meta, surfaced in the lightweight list summary.
+    tstory = client.post("/api/stories", json={"title": "Tagged", "character_id": char["id"],
+                                               "character_name": "Aria", "model": "mistral-nemo:12b",
+                                               "messages": [{"role": "assistant", "content": "hi"}]}).json()
+    client.put(f"/api/stories/{tstory['id']}/meta", json={"tags": ["fantasy", "slow-burn"]})
+    summ = next((s for s in client.get("/api/stories").json() if s["id"] == tstory["id"]), {})
+    check("api: story tags saved + listed", summ.get("tags") == ["fantasy", "slow-burn"], str(summ.get("tags")))
+
+    # Pinned stories sort ahead of a more-recently-updated unpinned one.
+    client.put(f"/api/stories/{tstory['id']}/meta", json={"pinned": True})
+    client.put(f"/api/stories/{istory['id']}/meta", json={"mood": "Calm"})  # make istory the newest
+    listed = client.get("/api/stories").json()
+    check("api: pinned story sorts first", listed and listed[0]["id"] == tstory["id"], str([s["id"] for s in listed[:3]]))
+    check("api: story list carries pinned flag",
+          next(s for s in listed if s["id"] == tstory["id"])["pinned"] is True)
+
+    # Pinned characters sort ahead of unpinned ones (not just alphabetical).
+    bobfull = client.get(f"/api/characters/{bob['id']}").json()
+    client.put(f"/api/characters/{bob['id']}", json={**bobfull, "pinned": True})
+    cnames = [c["name"] for c in client.get("/api/characters").json()]
+    check("api: pinned character sorts first", cnames and cnames[0] == "Bob", str(cnames[:4]))
+
+    # Scene background: upload (reusing the valid PNG bytes), serve, cap, clear.
+    bgset = client.post(f"/api/stories/{tstory['id']}/background",
+                        json={"data_b64": base64.b64encode(png).decode(), "ext": "png"}).json()
+    check("api: background set", bgset.get("background_image") == f"/backgrounds/{tstory['id']}.png",
+          str(bgset.get("background_image")))
+    check("api: background served", client.get(bgset["background_image"]).status_code == 200)
+    over = client.post(f"/api/stories/{tstory['id']}/background",
+                       json={"data_b64": base64.b64encode(b"x" * (main.MAX_BG_BYTES + 1)).decode(), "ext": "png"})
+    check("api: oversized background rejected", over.status_code == 400, str(over.status_code))
+    bad_ext = client.post(f"/api/stories/{tstory['id']}/background",
+                          json={"data_b64": base64.b64encode(png).decode(), "ext": "exe"})
+    check("api: background rejects bad ext", bad_ext.status_code == 400, str(bad_ext.status_code))
+    cleared = client.delete(f"/api/stories/{tstory['id']}/background").json()
+    check("api: background cleared", cleared.get("background_image") is None)
+    check("api: background file removed", not list(storage.BG_DIR.glob(f"{tstory['id']}.*")))
+    # a missing story id can't set a background (and can't escape the store)
+    check("api: background on missing story -> 404",
+          client.post("/api/stories/nope/background",
+                      json={"data_b64": base64.b64encode(png).decode(), "ext": "png"}).status_code == 404)
+
 
 def main():
     print("Running AI Roleplayer backend self-test...\n")

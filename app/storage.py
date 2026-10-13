@@ -33,14 +33,15 @@ PERSONA_DIR = DATA / "personas"
 AVATAR_DIR = DATA / "avatars"
 VEC_DIR = DATA / "vectors"
 SAMPLER_DIR = DATA / "sampler_presets"
+BG_DIR = DATA / "backgrounds"
 PRESET_DIR = ROOT / "presets" / "characters"
 
-_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, SAMPLER_DIR)
+_DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, SAMPLER_DIR, BG_DIR)
 
 
 def use_data_dir(path) -> None:
     """Point every store at a new data root (used by tests)."""
-    global DATA, CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, SAMPLER_DIR, _DIRS
+    global DATA, CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, SAMPLER_DIR, BG_DIR, _DIRS
     DATA = Path(path)
     CHAR_DIR = DATA / "characters"
     STORY_DIR = DATA / "stories"
@@ -49,7 +50,8 @@ def use_data_dir(path) -> None:
     AVATAR_DIR = DATA / "avatars"
     VEC_DIR = DATA / "vectors"
     SAMPLER_DIR = DATA / "sampler_presets"
-    _DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, SAMPLER_DIR)
+    BG_DIR = DATA / "backgrounds"
+    _DIRS = (CHAR_DIR, STORY_DIR, LORE_DIR, PERSONA_DIR, AVATAR_DIR, VEC_DIR, SAMPLER_DIR, BG_DIR)
 
 
 def _ensure_dirs() -> None:
@@ -126,7 +128,8 @@ def _doc_delete(dir_: Path, oid) -> bool:
 
 def list_characters() -> list[dict]:
     chars = _list(CHAR_DIR)
-    chars.sort(key=lambda c: c.get("name", "").lower())
+    # Pinned first, then alphabetical.
+    chars.sort(key=lambda c: (not bool(c.get("pinned")), c.get("name", "").lower()))
     return chars
 
 
@@ -155,8 +158,11 @@ def list_stories() -> list[dict]:
             "model": s.get("model"),
             "updated": s.get("updated", 0),
             "turns": len(s.get("messages", [])),
+            "tags": s.get("tags") or [],
+            "pinned": bool(s.get("pinned")),
         })
-    out.sort(key=lambda s: s.get("updated", 0), reverse=True)
+    # Pinned first, then most-recently-updated.
+    out.sort(key=lambda s: (not s["pinned"], -s.get("updated", 0)))
     return out
 
 

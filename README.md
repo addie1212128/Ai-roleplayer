@@ -32,6 +32,10 @@ Tavern character-card import.
 - 🌿 **Branches** — save the current story as a named timeline, keep playing, then
   restore any branch to explore a different path. Restoring auto-saves your live
   timeline first, so it's always reversible.
+- 🗂️ **Organize your library** — **tag** stories and filter the sidebar by tag,
+  **pin** favorite stories and characters to the top, and **search** by name.
+- 🖼️ **Scene backgrounds** — set a per-story backdrop image that sits behind the
+  chat (with an automatic readability scrim) for extra atmosphere.
 - 🪄 **AI assists** — **impersonate** (let the model draft *your* next line when
   you're stuck), **✨ generate a character** from a one-line concept, a
   **light/dark theme**, **story search**, and **keyboard shortcuts** (press `?`).
@@ -111,9 +115,10 @@ Your browser opens at **<http://localhost:8000>**. Pick a character and play.
    **›** at the end generates a new one), **↻** regenerate, **🎬** guided
    regenerate (give a note), **↳** continue, **📋** copy, **✎** edit, **🗑**
    delete from here.
-4. **⚙ Settings** (per story): model, persona, creativity, context size, reply
-   length, advanced samplers, saveable **sampler presets**, and a **banned
-   words & phrases** list to kill clichés.
+4. **⚙ Settings** (per story): model, persona, **tags** (to group & filter),
+   a **scene background** image, creativity, context size, reply length, advanced
+   samplers, saveable **sampler presets**, and a **banned words & phrases** list
+   to kill clichés. Click a story's **☆** (or a character's) to **pin** it to the top.
 5. The **author's note** bar above the composer is a private nudge to steer tone
    or what happens next — it's injected near the end of the prompt for max effect.
 6. **🌿 Branches** (header) save and restore alternate timelines; **⌨️** (or `?`)

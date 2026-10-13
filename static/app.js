@@ -11,6 +11,7 @@ const state = {
   streaming: false, abort: null,
   editingCharId: null, editingPersonaId: null, editingLoreId: null,
   editingCharImage: null, loreDraft: null, tts: false,
+  storyQuery: "", storyTag: "",
 };
 
 const prefs = {
@@ -52,6 +53,8 @@ const api = {
   importStory: (filename, data_b64) => jsend("/api/stories/import", "POST", { filename, data_b64 }),
   deleteStory: (id) => fetch(`/api/stories/${id}`, { method: "DELETE", headers: authH() }),
   storyMeta: (id, patch) => jsend(`/api/stories/${id}/meta`, "PUT", patch),
+  setBackground: (id, data_b64, ext) => jsend(`/api/stories/${id}/background`, "POST", { data_b64, ext }),
+  clearBackground: (id) => fetch(`/api/stories/${id}/background`, { method: "DELETE", headers: authH() }),
   listBranches: (id) => jget(`/api/stories/${id}/branches`),
   saveBranch: (id, name) => jsend(`/api/stories/${id}/branches`, "POST", { name }),
   restoreBranch: (id, bid) => jsend(`/api/stories/${id}/branches/${bid}/restore`, "POST"),
@@ -218,6 +221,40 @@ function startGuide(i, bubble) {
 
 function scrollToBottom() { const m = $("#messages"); m.scrollTop = m.scrollHeight; }
 
+// A versioned image URL (?v=updated) so a re-upload to the same story id busts
+// the browser cache instead of showing the stale picture.
+function bgUrl(story) {
+  const url = story && story.background_image;
+  if (!url) return "";
+  const bust = story.updated ? ("?v=" + Math.floor(story.updated * 1000)) : "";
+  return encodeURI(url) + bust;
+}
+
+// Paint the current story's scene background behind the chat, with a themed
+// scrim layered on top so message text stays readable. Cleared when there's
+// no image (or no open story).
+function applyBackground() {
+  const box = $("#messages");
+  if (!box) return;
+  const url = bgUrl(state.story);
+  if (url) {
+    box.style.backgroundImage = `linear-gradient(var(--bg-scrim), var(--bg-scrim)), url("${url}")`;
+    box.classList.add("has-bg");
+  } else {
+    box.style.backgroundImage = "";
+    box.classList.remove("has-bg");
+  }
+}
+
+// Thumbnail of the current background in the settings drawer.
+function renderBgPreview() {
+  const p = $("#s-bg-preview");
+  if (!p) return;
+  const url = bgUrl(state.story);
+  if (url) { p.innerHTML = `<img src="${escapeHtml(url)}" alt="" />`; p.classList.add("has-img"); }
+  else { p.textContent = "No image"; p.classList.remove("has-img"); }
+}
+
 function updateHeader() {
   const char = currentCharacter();
   const group = isGroupStory();
@@ -234,6 +271,7 @@ function updateHeader() {
     $("#an-input").value = (state.story.authors_note || {}).text || "";
     $("#mood-select").value = state.story.mood || "";
   }
+  applyBackground();
   renderGroupBar();
 }
 
@@ -638,18 +676,49 @@ function listItem({ emoji, emojiHtml, title, sub, onClick, actions }) {
   return el;
 }
 
+// A filter bar of every tag in use across saved stories; click one to narrow
+// the list, click it (or "All") again to clear. Hidden when nothing is tagged.
+function renderTagBar() {
+  const bar = $("#story-tags");
+  if (!bar) return;
+  const tags = [...new Set(state.stories.flatMap((s) => s.tags || []))].sort((a, b) => a.localeCompare(b));
+  bar.innerHTML = "";
+  if (!tags.length) { bar.classList.add("hidden"); state.storyTag = ""; return; }
+  bar.classList.remove("hidden");
+  const mk = (label, value, active) => {
+    const chip = document.createElement("button");
+    chip.className = "tag-chip" + (active ? " active" : "");
+    chip.textContent = label;
+    chip.onclick = () => { state.storyTag = active ? "" : value; renderStories(); };
+    return chip;
+  };
+  bar.appendChild(mk("All", "", !state.storyTag));
+  for (const t of tags) bar.appendChild(mk(t, t, state.storyTag === t));
+}
+
 function renderStories() {
+  renderTagBar();
   const box = $("#story-list"); box.innerHTML = "";
   if (!state.stories.length) { box.innerHTML = `<div class="hint">No saved stories yet.</div>`; return; }
   const q = (state.storyQuery || "").trim().toLowerCase();
-  const list = q ? state.stories.filter((s) =>
-    (s.title || "").toLowerCase().includes(q) || (s.character_name || "").toLowerCase().includes(q)) : state.stories;
-  if (!list.length) { box.innerHTML = `<div class="hint">No stories match “${escapeHtml(q)}”.</div>`; return; }
+  const tag = state.storyTag || "";
+  let list = state.stories;
+  if (q) list = list.filter((s) =>
+    (s.title || "").toLowerCase().includes(q) || (s.character_name || "").toLowerCase().includes(q));
+  if (tag) list = list.filter((s) => (s.tags || []).includes(tag));
+  if (!list.length) {
+    const why = tag ? `tagged “${escapeHtml(tag)}”` : `match “${escapeHtml(q)}”`;
+    box.innerHTML = `<div class="hint">No stories ${why}.</div>`; return;
+  }
   for (const s of list) {
+    const tagsSub = (s.tags && s.tags.length) ? " · " + s.tags.map((t) => "#" + t).join(" ") : "";
     box.appendChild(listItem({
-      emoji: "📖", title: s.title, sub: `${s.character_name || ""} · ${s.turns} msgs`,
+      emoji: s.pinned ? "📌" : "📖", title: s.title,
+      sub: `${s.character_name || ""} · ${s.turns} msgs${tagsSub}`,
       onClick: () => openStory(s.id),
       actions: [
+        { label: s.pinned ? "★" : "☆", title: s.pinned ? "Unpin" : "Pin to top", cls: s.pinned ? "pin on" : "pin",
+          fn: async () => { await api.storyMeta(s.id, { pinned: !s.pinned }); await refreshStories(); } },
         { label: "⤓", title: "Export JSON", fn: () => window.open(`/api/stories/${s.id}/export${tokenQ()}`, "_blank") },
         { label: "📝", title: "Export transcript (.md)", fn: () => window.open(`/api/stories/${s.id}/transcript${tokenQ()}`, "_blank") },
         { label: "🗑", title: "Delete", cls: "del", fn: async () => {
@@ -671,7 +740,11 @@ function renderCharacters() {
     box.appendChild(listItem({
       emojiHtml: avatarHtml(c), title: c.name, sub: c.description || "",
       onClick: () => startStoryWith(c),
-      actions: [{ label: "✎", title: "Edit", fn: () => openCharModal(c) }],
+      actions: [
+        { label: c.pinned ? "★" : "☆", title: c.pinned ? "Unpin" : "Pin to top", cls: c.pinned ? "pin on" : "pin",
+          fn: async () => { await api.saveCharacter({ ...c, pinned: !c.pinned }); await refreshCharacters(); } },
+        { label: "✎", title: "Edit", fn: () => openCharModal(c) },
+      ],
     }));
   }
 }
@@ -913,6 +986,8 @@ async function openSettings() {
   $("#s-embed").value = s.embed_model || "nomic-embed-text";
   $("#s-inner").checked = !!s.inner_monologue;
   $("#s-scene").value = state.story.scene || "";
+  $("#s-tags").value = (state.story.tags || []).join(", ");
+  renderBgPreview();
   $("#s-ban").value = s.ban_phrases || "";
   $("#s-preset-name").value = "";
   await loadSamplerPresets();
@@ -960,10 +1035,12 @@ async function saveSettings() {
     ...currentSamplerInputs(),
     rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
   };
-  const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value };
+  const tags = [...new Set($("#s-tags").value.split(",").map((t) => t.trim()).filter(Boolean))];
+  const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value, tags };
   state.story = await api.storyMeta(state.story.id, patch);
   $("#settings-modal").classList.add("hidden");
   updateHeader();
+  refreshStories();
 }
 
 // ---------- models ----------
@@ -1132,6 +1209,35 @@ function init() {
   $("#settings-btn").onclick = openSettings;
   $("#settings-cancel").onclick = () => $("#settings-modal").classList.add("hidden");
   $("#settings-save").onclick = saveSettings;
+
+  // scene background (uploads/clears immediately, like avatars)
+  $("#s-bg-upload").onclick = () => { if (state.story) $("#s-bg-file").click(); };
+  $("#s-bg-file").addEventListener("change", (e) => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (!f || !state.story) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = String(reader.result).split(",").pop();
+      const ext = (f.name.split(".").pop() || "png").toLowerCase();
+      try {
+        state.story = await api.setBackground(state.story.id, b64, ext);
+        renderBgPreview(); applyBackground(); refreshStories();
+        showToast("🖼 Background set");
+      } catch (err) { showToast("⚠️ " + err.message); }
+    };
+    reader.readAsDataURL(f);
+  });
+  $("#s-bg-clear").onclick = async () => {
+    if (!state.story) return;
+    if (!state.story.background_image) { renderBgPreview(); return; }
+    try {
+      const r = await api.clearBackground(state.story.id);
+      if (!r.ok) throw new Error("server " + r.status);
+      state.story = await r.json();
+      renderBgPreview(); applyBackground(); refreshStories();
+      showToast("🖼 Background removed");
+    } catch (e) { showToast("⚠️ " + e.message); }
+  };
   $("#s-temp").addEventListener("input", (e) => $("#s-temp-val").textContent = (+e.target.value).toFixed(2));
   $("#s-ctx").addEventListener("input", (e) => $("#s-ctx-val").textContent = e.target.value);
   $("#s-pred").addEventListener("input", (e) => $("#s-pred-val").textContent = e.target.value);

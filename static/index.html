@@ -38,6 +38,7 @@
         </span>
       </div>
       <input id="story-search" class="story-search" type="search" placeholder="Search stories…" />
+      <div id="story-tags" class="tag-bar hidden"></div>
       <div id="story-list" class="list"></div>
 
       <div class="section-label">
@@ -70,6 +71,7 @@
       <input id="import-file" type="file" accept=".json,.png" class="hidden" />
       <input id="import-story-file" type="file" accept=".json" class="hidden" />
       <input id="avatar-file" type="file" accept="image/*" class="hidden" />
+      <input id="s-bg-file" type="file" accept="image/*" class="hidden" />
     </aside>
 
     <!-- Main chat area -->
@@ -243,6 +245,10 @@
           <select id="s-persona"><option value="">None</option></select>
         </label>
       </div>
+      <label class="field">
+        <span>Tags <em>(comma-separated — group &amp; filter your stories in the sidebar)</em></span>
+        <input id="s-tags" type="text" placeholder="e.g. fantasy, slow-burn, canon" />
+      </label>
       <div class="row" style="align-items:flex-end">
         <label class="field" style="flex:1">
           <span>Sampler preset <em>(load a saved feel)</em></span>
@@ -271,6 +277,16 @@
       <p class="hint">RAG surfaces relevant older moments via embeddings. Pull the model first: <code>ollama pull nomic-embed-text</code>. Leave off if unsure.</p>
       <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-inner" type="checkbox" style="width:auto" /> Inner monologue — characters show private ((thoughts))</label>
       <label class="field"><span>Scene <em>(where / when / who's present — set once for this story)</em></span><textarea id="s-scene" rows="2"></textarea></label>
+      <div class="field">
+        <span>Scene background <em>(a backdrop image shown behind the chat)</em></span>
+        <div class="bg-edit">
+          <div id="s-bg-preview" class="bg-preview">No image</div>
+          <div class="bg-actions">
+            <button id="s-bg-upload" type="button" class="ghost">Upload image</button>
+            <button id="s-bg-clear" type="button" class="ghost">Remove</button>
+          </div>
+        </div>
+      </div>
       <label class="field"><span>Banned words &amp; phrases <em>(one per line — the AI rewrites around these; great for killing clichés)</em></span><textarea id="s-ban" rows="3" placeholder="shiver down the spine&#10;barely above a whisper&#10;eyes sparkling with mischief"></textarea></label>
       <details>
         <summary>Advanced samplers</summary>

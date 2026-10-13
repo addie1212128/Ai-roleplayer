@@ -4,6 +4,7 @@ Run:  python tests/browser_test.py
 Drives the real page in Chromium: start a story, send a message, see the reply
 stream in, generate a swipe, open settings. Fails on any JS console error.
 """
+import base64
 import glob
 import json
 import os
@@ -206,6 +207,44 @@ def main():
         page.keyboard.press("Escape")
         page.wait_for_function("document.querySelector('#settings-modal').classList.contains('hidden')", timeout=3000)
         check("UI: Escape closes a modal", page.locator("#settings-modal.hidden").count() == 1)
+
+        # ---- tags, scene background, pin-to-top ----
+        png_1x1 = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        bg_path = TMP / "bg.png"; bg_path.write_bytes(png_1x1)
+
+        page.click("#settings-btn")
+        page.wait_for_selector("#settings-modal:not(.hidden)", timeout=3000)
+        check("UI: tags field present", page.locator("#s-tags").count() == 1)
+        check("UI: scene-background controls present",
+              page.locator("#s-bg-preview").count() == 1 and page.locator("#s-bg-upload").count() == 1
+              and page.locator("#s-bg-clear").count() == 1)
+
+        # upload a scene background -> it paints behind the chat, with a preview
+        page.set_input_files("#s-bg-file", str(bg_path))
+        page.wait_for_function("document.querySelector('#messages').classList.contains('has-bg')", timeout=6000)
+        check("UI: scene background applied to chat", page.locator("#messages.has-bg").count() == 1)
+        check("UI: background preview shows image", page.locator("#s-bg-preview img").count() == 1)
+        page.click("#s-bg-clear")
+        page.wait_for_function("!document.querySelector('#messages').classList.contains('has-bg')", timeout=6000)
+        check("UI: scene background cleared", page.locator("#messages.has-bg").count() == 0)
+
+        # tag the story, save, and see the sidebar tag bar + chips appear
+        page.fill("#s-tags", "fantasy, test-tag")
+        page.click("#settings-save")
+        page.wait_for_function("document.querySelector('#settings-modal').classList.contains('hidden')", timeout=3000)
+        page.wait_for_function("!document.querySelector('#story-tags').classList.contains('hidden')", timeout=4000)
+        labels = page.evaluate("[...document.querySelectorAll('#story-tags .tag-chip')].map(c => c.textContent)")
+        check("UI: tag bar shows the new tags", "fantasy" in labels and "test-tag" in labels, str(labels))
+
+        # pin the active story to the top (star toggles 'Pin to top' -> 'Unpin')
+        spin = page.locator("#story-list .list-item .act[title='Pin to top']").first
+        check("UI: story pin button present", spin.count() == 1)
+        spin.click()
+        page.wait_for_function("!!document.querySelector(\"#story-list .list-item .act[title='Unpin']\")", timeout=4000)
+        check("UI: story pins to top", page.locator("#story-list .list-item .act[title='Unpin']").count() >= 1)
+        check("UI: character pin button present",
+              page.locator("#character-list .list-item .act[title='Pin to top']").count() >= 1)
 
         # character editor opens with advanced fields
         page.click("#edit-active-char")
