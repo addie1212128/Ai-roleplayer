@@ -38,6 +38,7 @@
         </span>
       </div>
       <input id="story-search" class="story-search" type="search" placeholder="Search stories…" />
+      <div id="story-tags" class="tag-bar hidden"></div>
       <div id="story-list" class="list"></div>
 
       <div class="section-label">
@@ -70,6 +71,7 @@
       <input id="import-file" type="file" accept=".json,.png" class="hidden" />
       <input id="import-story-file" type="file" accept=".json" class="hidden" />
       <input id="avatar-file" type="file" accept="image/*" class="hidden" />
+      <input id="s-bg-file" type="file" accept="image/*" class="hidden" />
     </aside>
 
     <!-- Main chat area -->
@@ -84,6 +86,7 @@
           <button id="theme-btn" class="ghost" title="Theme: system / dark / light">🌗 Auto</button>
           <button id="shortcuts-btn" class="ghost" title="Keyboard shortcuts">⌨️</button>
           <button id="tts-btn" class="ghost" title="Read replies aloud">🔈 Off</button>
+          <button id="memory-btn" class="ghost hidden" title="Memories — what the bot remembers">🧠</button>
           <button id="branch-btn" class="ghost hidden" title="Branches — save & restore alternate timelines">🌿</button>
           <button id="settings-btn" class="ghost hidden" title="Story settings">⚙ Settings</button>
           <button id="edit-active-char" class="ghost hidden">Edit character</button>
@@ -102,6 +105,7 @@
       <div id="group-bar" class="group-bar hidden"></div>
 
       <div id="an-bar" class="an-bar hidden">
+        <button id="rel-badge" type="button" class="rel-badge hidden" title="Relationship — click to adjust"></button>
         <select id="mood-select" title="Current mood of the character">
           <option value="">Mood…</option>
           <option>Happy</option><option>Sad</option><option>Angry</option><option>Afraid</option>
@@ -243,6 +247,10 @@
           <select id="s-persona"><option value="">None</option></select>
         </label>
       </div>
+      <label class="field">
+        <span>Tags <em>(comma-separated — group &amp; filter your stories in the sidebar)</em></span>
+        <input id="s-tags" type="text" placeholder="e.g. fantasy, slow-burn, canon" />
+      </label>
       <div class="row" style="align-items:flex-end">
         <label class="field" style="flex:1">
           <span>Sampler preset <em>(load a saved feel)</em></span>
@@ -270,7 +278,19 @@
       </div>
       <p class="hint">RAG surfaces relevant older moments via embeddings. Pull the model first: <code>ollama pull nomic-embed-text</code>. Leave off if unsure.</p>
       <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-inner" type="checkbox" style="width:auto" /> Inner monologue — characters show private ((thoughts))</label>
+      <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-automem" type="checkbox" style="width:auto" /> Auto-memory — the bot extracts &amp; remembers key facts as you play (🧠 to view/edit)</label>
+      <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-autorel" type="checkbox" style="width:auto" /> Auto-relationship — the character's feelings &amp; mood drift with how the scene goes (💗 badge to adjust)</label>
       <label class="field"><span>Scene <em>(where / when / who's present — set once for this story)</em></span><textarea id="s-scene" rows="2"></textarea></label>
+      <div class="field">
+        <span>Scene background <em>(a backdrop image shown behind the chat)</em></span>
+        <div class="bg-edit">
+          <div id="s-bg-preview" class="bg-preview">No image</div>
+          <div class="bg-actions">
+            <button id="s-bg-upload" type="button" class="ghost">Upload image</button>
+            <button id="s-bg-clear" type="button" class="ghost">Remove</button>
+          </div>
+        </div>
+      </div>
       <label class="field"><span>Banned words &amp; phrases <em>(one per line — the AI rewrites around these; great for killing clichés)</em></span><textarea id="s-ban" rows="3" placeholder="shiver down the spine&#10;barely above a whisper&#10;eyes sparkling with mischief"></textarea></label>
       <details>
         <summary>Advanced samplers</summary>
@@ -289,6 +309,57 @@
         <span class="spacer"></span>
         <button id="settings-cancel" class="ghost">Close</button>
         <button id="settings-save" class="primary">Save settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Memory manager -->
+  <div id="memory-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>🧠 Memories</h3>
+      <p class="hint">Durable facts the bot keeps and reuses. <b>Story</b> memories stay in this
+        story; <b>character</b> memories follow the character into every story. Pin (📌) the
+        important ones so they're always included. With auto-memory on (Settings), the bot
+        adds facts here itself as you play.</p>
+      <div class="mem-section">
+        <div class="mem-head">This story</div>
+        <div class="gen-row">
+          <input id="mem-add-input" type="text" placeholder="Add a fact to remember in this story…" />
+          <button id="mem-add-btn" type="button" class="primary">Add</button>
+        </div>
+        <div id="mem-story-list" class="mem-list"></div>
+      </div>
+      <div id="mem-char-section" class="mem-section">
+        <div class="mem-head"><span id="mem-char-name">Character</span> always remembers</div>
+        <div class="gen-row">
+          <input id="mem-char-add-input" type="text" placeholder="Add a lasting fact for this character…" />
+          <button id="mem-char-add-btn" type="button" class="primary">Add</button>
+        </div>
+        <div id="mem-char-list" class="mem-list"></div>
+      </div>
+      <div class="modal-actions"><span class="spacer"></span><button id="memory-cancel" class="ghost">Close</button></div>
+    </div>
+  </div>
+
+  <!-- Relationship editor -->
+  <div id="rel-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>💗 Relationship</h3>
+      <p class="hint">How <span id="rel-char-name">the character</span> feels about you. It drifts
+        on its own as you play (toggle in Settings) — or set it by hand here any time.</p>
+      <label class="field">
+        <span>Standing <output id="rel-aff-val"></output> <em id="rel-band"></em></span>
+        <input id="rel-aff" type="range" min="-100" max="100" step="5" />
+      </label>
+      <label class="field">
+        <span>Status label <em>(how they'd describe you — e.g. wary allies, budding trust)</em></span>
+        <input id="rel-status" type="text" placeholder="getting acquainted" />
+      </label>
+      <div id="rel-reason" class="hint"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="rel-cancel" class="ghost">Close</button>
+        <button id="rel-save" class="primary">Save</button>
       </div>
     </div>
   </div>

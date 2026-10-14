@@ -4,6 +4,7 @@ Run:  python tests/browser_test.py
 Drives the real page in Chromium: start a story, send a message, see the reply
 stream in, generate a swipe, open settings. Fails on any JS console error.
 """
+import base64
 import glob
 import json
 import os
@@ -61,6 +62,12 @@ def start_fake_ollama(port):
                 return JSONResponse({"message": {"content": (
                     '{"name":"Ember","description":"A fire mage.","personality":"Bold.",'
                     '"scenario":"A ruined tower.","greeting":"*flames flicker* Hello."}')},
+                    "done": True})
+            if "memory archivist" in sysmsg:
+                return JSONResponse({"message": {"content": '["A fact worth remembering."]'}, "done": True})
+            if "track the emotional arc" in sysmsg:
+                return JSONResponse({"message": {"content":
+                    '{"affinity_delta": 5, "status": "warming up", "mood": "Calm", "reason": "pleasant chat"}'},
                     "done": True})
             return JSONResponse({"message": {"content": "- summary."}, "done": True})
 
@@ -206,6 +213,83 @@ def main():
         page.keyboard.press("Escape")
         page.wait_for_function("document.querySelector('#settings-modal').classList.contains('hidden')", timeout=3000)
         check("UI: Escape closes a modal", page.locator("#settings-modal.hidden").count() == 1)
+
+        # ---- tags, scene background, pin-to-top ----
+        png_1x1 = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        bg_path = TMP / "bg.png"; bg_path.write_bytes(png_1x1)
+
+        page.click("#settings-btn")
+        page.wait_for_selector("#settings-modal:not(.hidden)", timeout=3000)
+        check("UI: tags field present", page.locator("#s-tags").count() == 1)
+        check("UI: auto-memory toggle present", page.locator("#s-automem").count() == 1)
+        check("UI: auto-relationship toggle present", page.locator("#s-autorel").count() == 1)
+        check("UI: scene-background controls present",
+              page.locator("#s-bg-preview").count() == 1 and page.locator("#s-bg-upload").count() == 1
+              and page.locator("#s-bg-clear").count() == 1)
+
+        # upload a scene background -> it paints behind the chat, with a preview
+        page.set_input_files("#s-bg-file", str(bg_path))
+        page.wait_for_function("document.querySelector('#messages').classList.contains('has-bg')", timeout=6000)
+        check("UI: scene background applied to chat", page.locator("#messages.has-bg").count() == 1)
+        check("UI: background preview shows image", page.locator("#s-bg-preview img").count() == 1)
+        page.click("#s-bg-clear")
+        page.wait_for_function("!document.querySelector('#messages').classList.contains('has-bg')", timeout=6000)
+        check("UI: scene background cleared", page.locator("#messages.has-bg").count() == 0)
+
+        # tag the story, save, and see the sidebar tag bar + chips appear
+        page.fill("#s-tags", "fantasy, test-tag")
+        page.click("#settings-save")
+        page.wait_for_function("document.querySelector('#settings-modal').classList.contains('hidden')", timeout=3000)
+        page.wait_for_function("!document.querySelector('#story-tags').classList.contains('hidden')", timeout=4000)
+        labels = page.evaluate("[...document.querySelectorAll('#story-tags .tag-chip')].map(c => c.textContent)")
+        check("UI: tag bar shows the new tags", "fantasy" in labels and "test-tag" in labels, str(labels))
+
+        # pin the active story to the top (star toggles 'Pin to top' -> 'Unpin')
+        spin = page.locator("#story-list .list-item .act[title='Pin to top']").first
+        check("UI: story pin button present", spin.count() == 1)
+        spin.click()
+        page.wait_for_function("!!document.querySelector(\"#story-list .list-item .act[title='Unpin']\")", timeout=4000)
+        check("UI: story pins to top", page.locator("#story-list .list-item .act[title='Unpin']").count() >= 1)
+        check("UI: character pin button present",
+              page.locator("#character-list .list-item .act[title='Pin to top']").count() >= 1)
+
+        # ---- memories: open drawer, add a fact, pin it ----
+        check("UI: memory button present", page.locator("#memory-btn").count() == 1)
+        page.click("#memory-btn")
+        page.wait_for_selector("#memory-modal:not(.hidden)", timeout=3000)
+        check("UI: memory drawer opens", page.locator("#mem-story-list").count() == 1)
+        check("UI: character memory section present", page.locator("#mem-char-section").count() == 1)
+        page.fill("#mem-add-input", "Kael distrusts the royal guard.")
+        page.click("#mem-add-btn")
+        page.wait_for_function(
+            "[...document.querySelectorAll('#mem-story-list .mem-text')].some(e => e.textContent.includes('royal guard'))",
+            timeout=4000)
+        check("UI: memory added + listed",
+              page.evaluate("[...document.querySelectorAll('#mem-story-list .mem-text')].some(e => e.textContent.includes('royal guard'))"))
+        page.locator("#mem-story-list .mem-row .act.pin").first.click()
+        page.wait_for_function("!!document.querySelector('#mem-story-list .mem-row.pinned')", timeout=4000)
+        check("UI: memory can be pinned", page.locator("#mem-story-list .mem-row.pinned").count() >= 1)
+        page.keyboard.press("Escape")
+        page.wait_for_function("document.querySelector('#memory-modal').classList.contains('hidden')", timeout=3000)
+        check("UI: Escape closes memory drawer", page.locator("#memory-modal.hidden").count() == 1)
+
+        # ---- relationship badge + editor ----
+        check("UI: relationship badge visible", page.locator("#rel-badge:not(.hidden)").count() == 1)
+        page.click("#rel-badge")
+        page.wait_for_selector("#rel-modal:not(.hidden)", timeout=3000)
+        check("UI: relationship modal opens", page.locator("#rel-aff").count() == 1)
+        page.fill("#rel-status", "test allies")
+        page.evaluate("const s=document.querySelector('#rel-aff'); s.value=60; s.dispatchEvent(new Event('input'));")
+        check("UI: band label updates with the slider",
+              ("attached" in page.inner_text("#rel-band")) or ("warm" in page.inner_text("#rel-band")),
+              page.inner_text("#rel-band"))
+        page.click("#rel-save")
+        page.wait_for_function("document.querySelector('#rel-modal').classList.contains('hidden')", timeout=3000)
+        page.wait_for_function(
+            "document.querySelector('#rel-badge') && document.querySelector('#rel-badge').textContent.includes('test allies')",
+            timeout=4000)
+        check("UI: badge reflects the saved relationship", "test allies" in page.inner_text("#rel-badge"))
 
         # character editor opens with advanced fields
         page.click("#edit-active-char")

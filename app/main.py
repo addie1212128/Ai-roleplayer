@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from . import cards, context, rag, storage
+from . import cards, context, memory, rag, relationship, storage
 from .samplers import DEFAULTS, build_options, pick_sampler_fields, preset_for
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
@@ -115,6 +115,8 @@ class StoryMeta(BaseModel):
     settings: Optional[dict] = None
     mood: Optional[str] = None
     scene: Optional[str] = None
+    tags: Optional[List[str]] = None
+    pinned: Optional[bool] = None
 
 
 class ChatReq(BaseModel):
@@ -173,6 +175,20 @@ class AvatarReq(BaseModel):
     ext: str = "png"
 
 
+class MemoryCreate(BaseModel):
+    text: str
+
+
+class MemoryEdit(BaseModel):
+    text: Optional[str] = None
+    pinned: Optional[bool] = None
+
+
+class RelationshipEdit(BaseModel):
+    affinity: Optional[int] = None
+    status: Optional[str] = None
+
+
 class GenCharReq(BaseModel):
     concept: str = ""
     model: str = ""
@@ -180,6 +196,7 @@ class GenCharReq(BaseModel):
 
 _IMG_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
 MAX_AVATAR_BYTES = 8_000_000
+MAX_BG_BYTES = 12_000_000          # scene backgrounds can be a bit larger
 
 
 def _save_avatar(cid: str, raw: bytes, ext: str) -> str:
@@ -192,6 +209,18 @@ def _save_avatar(cid: str, raw: bytes, ext: str) -> str:
             pass
     (storage.AVATAR_DIR / f"{cid}.{ext}").write_bytes(raw)
     return f"/avatars/{cid}.{ext}"
+
+
+def _save_background(sid: str, raw: bytes, ext: str) -> str:
+    """Write a story's scene-background image; returns the servable path."""
+    storage.BG_DIR.mkdir(parents=True, exist_ok=True)
+    for p in storage.BG_DIR.glob(f"{sid}.*"):      # drop any previous ext
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    (storage.BG_DIR / f"{sid}.{ext}").write_bytes(raw)
+    return f"/backgrounds/{sid}.{ext}"
 
 
 # --- helpers ------------------------------------------------------------------
@@ -645,8 +674,21 @@ async def chat(req: ChatReq):
 
             storage.save_story(story)
             summarized = False
+            memorized = False
+            rel = None
             if action in ("send", "regenerate", "group_speak"):
                 summarized = await _maybe_summarize(story, model)
+                if settings.get("auto_memory", True):
+                    try:
+                        memorized = await memory.auto_extract(story, character, model, OLLAMA_URL, user_name)
+                    except Exception:
+                        memorized = False  # memory capture must never break a turn
+                # Relationship + mood drift (single-character scenes only).
+                if settings.get("auto_relationship", True) and not _is_group(story):
+                    try:
+                        rel = await relationship.auto_update(story, character, model, OLLAMA_URL, user_name)
+                    except Exception:
+                        rel = None
 
             yield _sse({
                 "done": True,
@@ -656,6 +698,8 @@ async def chat(req: ChatReq):
                 "eval_tokens": eval_tokens,
                 "num_ctx": settings.get("num_ctx"),
                 "summarized": summarized,
+                "memorized": memorized,
+                "relationship": rel,
                 "debug": built["debug"],
             })
 
@@ -872,7 +916,7 @@ async def backup():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for d in (storage.CHAR_DIR, storage.STORY_DIR, storage.LORE_DIR,
-                  storage.PERSONA_DIR, storage.AVATAR_DIR):
+                  storage.PERSONA_DIR, storage.AVATAR_DIR, storage.BG_DIR):
             if not d.exists():
                 continue
             for f in d.rglob("*"):
@@ -971,6 +1015,193 @@ async def delete_from(sid: str, idx: int):
         _invalidate_summaries(story, idx)
         storage.save_story(story)
         return {"ok": True, "length": len(story["messages"])}
+
+
+# --- scene background image ---------------------------------------------------
+
+@app.post("/api/stories/{sid}/background")
+async def set_background(sid: str, req: AvatarReq):
+    async with _lock(sid):
+        story = storage.get_story(sid)       # validates id (safe charset) + existence
+        if not story:
+            raise HTTPException(404, "Story not found")
+        ext = (req.ext or "png").lower().lstrip(".")
+        if ext == "jpeg":
+            ext = "jpg"
+        if ext not in _IMG_EXTS:
+            raise HTTPException(400, "Unsupported image type")
+        try:
+            raw = base64.b64decode(req.data_b64)
+        except Exception:
+            raise HTTPException(400, "Could not decode the image.")
+        if len(raw) > MAX_BG_BYTES:
+            raise HTTPException(400, "Image too large (max 12 MB).")
+        story["background_image"] = _save_background(sid, raw, ext)
+        return _story_response(storage.save_story(story))
+
+
+@app.delete("/api/stories/{sid}/background")
+async def clear_background(sid: str):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        for p in storage.BG_DIR.glob(f"{sid}.*"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        story["background_image"] = None
+        return _story_response(storage.save_story(story))
+
+
+# --- durable memories (per-story + per-character) -----------------------------
+
+@app.get("/api/stories/{sid}/memories")
+async def get_memories(sid: str):
+    story = storage.get_story(sid)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    cid = story.get("character_id")
+    char = storage.get_character(cid) if cid else None
+    return {
+        "story": story.get("memories", []),
+        "character": (char or {}).get("memories", []),
+        "character_id": cid if char else None,
+        "character_name": (char or {}).get("name") or story.get("character_name"),
+        "auto_memory": (story.get("settings") or {}).get("auto_memory", True),
+    }
+
+
+@app.post("/api/stories/{sid}/memories")
+async def add_story_memory(sid: str, req: MemoryCreate):
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Memory text is empty.")
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        mems = story.setdefault("memories", [])
+        mem = memory.new_memory(text, "manual")
+        mems.append(mem)
+        memory.enforce_cap(mems, memory.STORY_CAP)
+        storage.save_story(story)
+        return {"ok": True, "memory": mem}
+
+
+@app.put("/api/stories/{sid}/memories/{mid}")
+async def edit_story_memory(sid: str, mid: str, edit: MemoryEdit):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        mem = memory.find(story.get("memories", []), mid)
+        if not mem:
+            raise HTTPException(404, "Memory not found")
+        if edit.text is not None:
+            t = edit.text.strip()
+            if not t:
+                raise HTTPException(400, "Memory text is empty.")
+            mem["text"] = t[:memory.MAX_MEMORY_LEN]
+        if edit.pinned is not None:
+            mem["pinned"] = bool(edit.pinned)
+        storage.save_story(story)
+        return mem
+
+
+@app.delete("/api/stories/{sid}/memories/{mid}")
+async def delete_story_memory(sid: str, mid: str):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        mems = story.get("memories", [])
+        kept = [m for m in mems if m.get("id") != mid]
+        if len(kept) == len(mems):
+            raise HTTPException(404, "Memory not found")
+        story["memories"] = kept
+        storage.save_story(story)
+        return {"ok": True}
+
+
+@app.post("/api/characters/{cid}/memories")
+async def add_char_memory(cid: str, req: MemoryCreate):
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Memory text is empty.")
+    char = storage.get_character(cid)
+    if not char:
+        raise HTTPException(404, "Character not found")
+    mems = char.setdefault("memories", [])
+    mem = memory.new_memory(text, "manual")
+    mems.append(mem)
+    memory.enforce_cap(mems, memory.CHARACTER_CAP)
+    storage.save_character(char)
+    return {"ok": True, "memory": mem}
+
+
+@app.put("/api/characters/{cid}/memories/{mid}")
+async def edit_char_memory(cid: str, mid: str, edit: MemoryEdit):
+    char = storage.get_character(cid)
+    if not char:
+        raise HTTPException(404, "Character not found")
+    mem = memory.find(char.get("memories", []), mid)
+    if not mem:
+        raise HTTPException(404, "Memory not found")
+    if edit.text is not None:
+        t = edit.text.strip()
+        if not t:
+            raise HTTPException(400, "Memory text is empty.")
+        mem["text"] = t[:memory.MAX_MEMORY_LEN]
+    if edit.pinned is not None:
+        mem["pinned"] = bool(edit.pinned)
+    storage.save_character(char)
+    return mem
+
+
+@app.delete("/api/characters/{cid}/memories/{mid}")
+async def delete_char_memory(cid: str, mid: str):
+    char = storage.get_character(cid)
+    if not char:
+        raise HTTPException(404, "Character not found")
+    mems = char.get("memories", [])
+    kept = [m for m in mems if m.get("id") != mid]
+    if len(kept) == len(mems):
+        raise HTTPException(404, "Memory not found")
+    char["memories"] = kept
+    storage.save_character(char)
+    return {"ok": True}
+
+
+# --- relationship (per-story character↔user standing) -------------------------
+
+@app.get("/api/stories/{sid}/relationship")
+async def get_relationship(sid: str):
+    story = storage.get_story(sid)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    rel = story.get("relationship") or relationship.default_relationship()
+    return {**rel, "band": relationship.band(rel.get("affinity", 0)),
+            "auto_relationship": (story.get("settings") or {}).get("auto_relationship", True),
+            "is_group": _is_group(story)}
+
+
+@app.put("/api/stories/{sid}/relationship")
+async def set_relationship(sid: str, edit: RelationshipEdit):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        rel = story.get("relationship") or relationship.default_relationship()
+        if edit.affinity is not None:
+            rel["affinity"] = relationship.clamp(int(edit.affinity), -100, 100)
+        if edit.status is not None:
+            rel["status"] = edit.status.strip()[:60]
+        rel["updated"] = time.time()
+        story["relationship"] = rel
+        storage.save_story(story)
+        return {**rel, "band": relationship.band(rel.get("affinity", 0))}
 
 
 # --- branches (saved alternate timelines) -------------------------------------
@@ -1126,6 +1357,7 @@ async def remove_sampler_preset(pid: str):
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.mount("/avatars", StaticFiles(directory=str(storage.AVATAR_DIR)), name="avatars")
+app.mount("/backgrounds", StaticFiles(directory=str(storage.BG_DIR)), name="backgrounds")
 
 
 @app.get("/")

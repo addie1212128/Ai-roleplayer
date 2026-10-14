@@ -22,3 +22,6 @@ training/outputs/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local agent/session tooling state (not part of the project)
+.anchor/

@@ -11,6 +11,7 @@ const state = {
   streaming: false, abort: null,
   editingCharId: null, editingPersonaId: null, editingLoreId: null,
   editingCharImage: null, loreDraft: null, tts: false,
+  storyQuery: "", storyTag: "",
 };
 
 const prefs = {
@@ -52,6 +53,17 @@ const api = {
   importStory: (filename, data_b64) => jsend("/api/stories/import", "POST", { filename, data_b64 }),
   deleteStory: (id) => fetch(`/api/stories/${id}`, { method: "DELETE", headers: authH() }),
   storyMeta: (id, patch) => jsend(`/api/stories/${id}/meta`, "PUT", patch),
+  setBackground: (id, data_b64, ext) => jsend(`/api/stories/${id}/background`, "POST", { data_b64, ext }),
+  clearBackground: (id) => fetch(`/api/stories/${id}/background`, { method: "DELETE", headers: authH() }),
+  memories: (id) => jget(`/api/stories/${id}/memories`),
+  addStoryMemory: (id, text) => jsend(`/api/stories/${id}/memories`, "POST", { text }),
+  updateStoryMemory: (id, mid, patch) => jsend(`/api/stories/${id}/memories/${mid}`, "PUT", patch),
+  deleteStoryMemory: (id, mid) => fetch(`/api/stories/${id}/memories/${mid}`, { method: "DELETE", headers: authH() }),
+  addCharMemory: (cid, text) => jsend(`/api/characters/${cid}/memories`, "POST", { text }),
+  updateCharMemory: (cid, mid, patch) => jsend(`/api/characters/${cid}/memories/${mid}`, "PUT", patch),
+  deleteCharMemory: (cid, mid) => fetch(`/api/characters/${cid}/memories/${mid}`, { method: "DELETE", headers: authH() }),
+  relationship: (id) => jget(`/api/stories/${id}/relationship`),
+  setRelationship: (id, patch) => jsend(`/api/stories/${id}/relationship`, "PUT", patch),
   listBranches: (id) => jget(`/api/stories/${id}/branches`),
   saveBranch: (id, name) => jsend(`/api/stories/${id}/branches`, "POST", { name }),
   restoreBranch: (id, bid) => jsend(`/api/stories/${id}/branches/${bid}/restore`, "POST"),
@@ -218,6 +230,40 @@ function startGuide(i, bubble) {
 
 function scrollToBottom() { const m = $("#messages"); m.scrollTop = m.scrollHeight; }
 
+// A versioned image URL (?v=updated) so a re-upload to the same story id busts
+// the browser cache instead of showing the stale picture.
+function bgUrl(story) {
+  const url = story && story.background_image;
+  if (!url) return "";
+  const bust = story.updated ? ("?v=" + Math.floor(story.updated * 1000)) : "";
+  return encodeURI(url) + bust;
+}
+
+// Paint the current story's scene background behind the chat, with a themed
+// scrim layered on top so message text stays readable. Cleared when there's
+// no image (or no open story).
+function applyBackground() {
+  const box = $("#messages");
+  if (!box) return;
+  const url = bgUrl(state.story);
+  if (url) {
+    box.style.backgroundImage = `linear-gradient(var(--bg-scrim), var(--bg-scrim)), url("${url}")`;
+    box.classList.add("has-bg");
+  } else {
+    box.style.backgroundImage = "";
+    box.classList.remove("has-bg");
+  }
+}
+
+// Thumbnail of the current background in the settings drawer.
+function renderBgPreview() {
+  const p = $("#s-bg-preview");
+  if (!p) return;
+  const url = bgUrl(state.story);
+  if (url) { p.innerHTML = `<img src="${escapeHtml(url)}" alt="" />`; p.classList.add("has-img"); }
+  else { p.textContent = "No image"; p.classList.remove("has-img"); }
+}
+
 function updateHeader() {
   const char = currentCharacter();
   const group = isGroupStory();
@@ -226,6 +272,7 @@ function updateHeader() {
     : (char ? char.name : (state.story ? state.story.title : "Pick a character to begin"));
   const open = !!state.story;
   $("#edit-active-char").classList.toggle("hidden", !char);
+  $("#memory-btn").classList.toggle("hidden", !open);
   $("#branch-btn").classList.toggle("hidden", !open);
   $("#settings-btn").classList.toggle("hidden", !open);
   $("#composer").classList.toggle("hidden", !open);
@@ -234,6 +281,8 @@ function updateHeader() {
     $("#an-input").value = (state.story.authors_note || {}).text || "";
     $("#mood-select").value = state.story.mood || "";
   }
+  applyBackground();
+  renderRelBadge();
   renderGroupBar();
 }
 
@@ -331,7 +380,16 @@ async function chatAction(action, userText, charId, note) {
         let obj; try { obj = JSON.parse(line); } catch { continue; }
         if (obj.token) { full += obj.token; tmpBubble.innerHTML = formatContent(stripThink(full)); scrollToBottom(); }
         else if (obj.error) { errorMsg = obj.error; tmpBubble.classList.remove("cursor"); tmpBubble.innerHTML = formatContent("⚠️ " + obj.error); }
-        else if (obj.done) { updateCtxMeter(obj.prompt_tokens, obj.num_ctx); }
+        else if (obj.done) {
+          updateCtxMeter(obj.prompt_tokens, obj.num_ctx);
+          if (obj.memorized) showToast("🧠 Remembered something new");
+          if (obj.relationship) {
+            state.story.relationship = obj.relationship;
+            const d = obj.relationship.last_delta || 0;
+            if (d) showToast((d > 0 ? "💗 " : "💔 ") + ((currentCharacter() || {}).name || "They") +
+                             (d > 0 ? " warmed toward you" : " cooled toward you"));
+          }
+        }
       }
     }
   } catch (e) {
@@ -638,18 +696,49 @@ function listItem({ emoji, emojiHtml, title, sub, onClick, actions }) {
   return el;
 }
 
+// A filter bar of every tag in use across saved stories; click one to narrow
+// the list, click it (or "All") again to clear. Hidden when nothing is tagged.
+function renderTagBar() {
+  const bar = $("#story-tags");
+  if (!bar) return;
+  const tags = [...new Set(state.stories.flatMap((s) => s.tags || []))].sort((a, b) => a.localeCompare(b));
+  bar.innerHTML = "";
+  if (!tags.length) { bar.classList.add("hidden"); state.storyTag = ""; return; }
+  bar.classList.remove("hidden");
+  const mk = (label, value, active) => {
+    const chip = document.createElement("button");
+    chip.className = "tag-chip" + (active ? " active" : "");
+    chip.textContent = label;
+    chip.onclick = () => { state.storyTag = active ? "" : value; renderStories(); };
+    return chip;
+  };
+  bar.appendChild(mk("All", "", !state.storyTag));
+  for (const t of tags) bar.appendChild(mk(t, t, state.storyTag === t));
+}
+
 function renderStories() {
+  renderTagBar();
   const box = $("#story-list"); box.innerHTML = "";
   if (!state.stories.length) { box.innerHTML = `<div class="hint">No saved stories yet.</div>`; return; }
   const q = (state.storyQuery || "").trim().toLowerCase();
-  const list = q ? state.stories.filter((s) =>
-    (s.title || "").toLowerCase().includes(q) || (s.character_name || "").toLowerCase().includes(q)) : state.stories;
-  if (!list.length) { box.innerHTML = `<div class="hint">No stories match “${escapeHtml(q)}”.</div>`; return; }
+  const tag = state.storyTag || "";
+  let list = state.stories;
+  if (q) list = list.filter((s) =>
+    (s.title || "").toLowerCase().includes(q) || (s.character_name || "").toLowerCase().includes(q));
+  if (tag) list = list.filter((s) => (s.tags || []).includes(tag));
+  if (!list.length) {
+    const why = tag ? `tagged “${escapeHtml(tag)}”` : `match “${escapeHtml(q)}”`;
+    box.innerHTML = `<div class="hint">No stories ${why}.</div>`; return;
+  }
   for (const s of list) {
+    const tagsSub = (s.tags && s.tags.length) ? " · " + s.tags.map((t) => "#" + t).join(" ") : "";
     box.appendChild(listItem({
-      emoji: "📖", title: s.title, sub: `${s.character_name || ""} · ${s.turns} msgs`,
+      emoji: s.pinned ? "📌" : "📖", title: s.title,
+      sub: `${s.character_name || ""} · ${s.turns} msgs${tagsSub}`,
       onClick: () => openStory(s.id),
       actions: [
+        { label: s.pinned ? "★" : "☆", title: s.pinned ? "Unpin" : "Pin to top", cls: s.pinned ? "pin on" : "pin",
+          fn: async () => { await api.storyMeta(s.id, { pinned: !s.pinned }); await refreshStories(); } },
         { label: "⤓", title: "Export JSON", fn: () => window.open(`/api/stories/${s.id}/export${tokenQ()}`, "_blank") },
         { label: "📝", title: "Export transcript (.md)", fn: () => window.open(`/api/stories/${s.id}/transcript${tokenQ()}`, "_blank") },
         { label: "🗑", title: "Delete", cls: "del", fn: async () => {
@@ -671,7 +760,11 @@ function renderCharacters() {
     box.appendChild(listItem({
       emojiHtml: avatarHtml(c), title: c.name, sub: c.description || "",
       onClick: () => startStoryWith(c),
-      actions: [{ label: "✎", title: "Edit", fn: () => openCharModal(c) }],
+      actions: [
+        { label: c.pinned ? "★" : "☆", title: c.pinned ? "Unpin" : "Pin to top", cls: c.pinned ? "pin on" : "pin",
+          fn: async () => { await api.saveCharacter({ ...c, pinned: !c.pinned }); await refreshCharacters(); } },
+        { label: "✎", title: "Edit", fn: () => openCharModal(c) },
+      ],
     }));
   }
 }
@@ -891,6 +984,168 @@ async function restoreBranch(b) {
   } catch (e) { showToast("⚠️ " + e.message); }
 }
 
+// ---------- memories (per-story + per-character) ----------
+async function openMemoryModal() {
+  if (!state.story) return;
+  await renderMemories();
+  $("#memory-modal").classList.remove("hidden");
+  $("#mem-add-input").focus();
+}
+
+async function renderMemories() {
+  let data;
+  try { data = await api.memories(state.story.id); }
+  catch (e) { showToast("⚠️ " + e.message); return; }
+  state.memCharId = data.character_id || null;
+  $("#mem-char-name").textContent = data.character_name || "This character";
+  $("#mem-char-section").classList.toggle("hidden", !data.character_id);
+  renderMemList($("#mem-story-list"), data.story || [], "story");
+  renderMemList($("#mem-char-list"), data.character || [], "char");
+}
+
+function renderMemList(box, mems, scope) {
+  box.innerHTML = "";
+  if (!mems.length) { box.innerHTML = `<div class="hint">None yet.</div>`; return; }
+  const ordered = mems.slice().sort((a, b) =>
+    (Number(!!b.pinned) - Number(!!a.pinned)) || ((b.created || 0) - (a.created || 0)));
+  for (const m of ordered) {
+    const row = document.createElement("div");
+    row.className = "mem-row" + (m.pinned ? " pinned" : "");
+    const text = document.createElement("div");
+    text.className = "mem-text"; text.textContent = m.text;
+    row.appendChild(text);
+    if (m.source === "auto") {
+      const tag = document.createElement("span");
+      tag.className = "mem-auto"; tag.textContent = "auto"; tag.title = "Captured automatically";
+      row.appendChild(tag);
+    }
+    const acts = document.createElement("div"); acts.className = "mem-acts";
+    const mk = (label, title, fn, cls) => {
+      const b = document.createElement("button");
+      b.className = "act " + (cls || ""); b.textContent = label; b.title = title; b.onclick = fn; return b;
+    };
+    acts.appendChild(mk(m.pinned ? "📌" : "📍", m.pinned ? "Unpin" : "Pin (always remember)",
+      () => toggleMemPin(scope, m), m.pinned ? "pin on" : "pin"));
+    if (scope === "story" && state.memCharId)
+      acts.appendChild(mk("⭐", "Make this character always remember it", () => promoteMem(m)));
+    acts.appendChild(mk("✎", "Edit", () => editMem(scope, m, row)));
+    acts.appendChild(mk("🗑", "Delete", () => deleteMem(scope, m), "del"));
+    row.appendChild(acts);
+    box.appendChild(row);
+  }
+}
+
+async function toggleMemPin(scope, m) {
+  try {
+    if (scope === "story") await api.updateStoryMemory(state.story.id, m.id, { pinned: !m.pinned });
+    else await api.updateCharMemory(state.memCharId, m.id, { pinned: !m.pinned });
+    await renderMemories();
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
+async function promoteMem(m) {
+  if (!state.memCharId) return;
+  try {
+    await api.addCharMemory(state.memCharId, m.text);
+    const r = await api.deleteStoryMemory(state.story.id, m.id);
+    if (!r.ok) throw new Error("server " + r.status);
+    await renderMemories();
+    showToast("⭐ Now permanent for this character");
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
+function editMem(scope, m, row) {
+  if (row.querySelector(".mem-edit")) return;
+  const textEl = row.querySelector(".mem-text");
+  const acts = row.querySelector(".mem-acts");
+  const input = document.createElement("input");
+  input.className = "mem-edit"; input.type = "text"; input.value = m.text;
+  textEl.replaceWith(input);
+  if (acts) acts.classList.add("hidden");
+  input.focus();
+  const commit = async () => {
+    const t = input.value.trim();
+    if (!t) { renderMemories(); return; }
+    try {
+      if (scope === "story") await api.updateStoryMemory(state.story.id, m.id, { text: t });
+      else await api.updateCharMemory(state.memCharId, m.id, { text: t });
+    } catch (e) { showToast("⚠️ " + e.message); }
+    renderMemories();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { e.preventDefault(); renderMemories(); }
+  });
+}
+
+async function deleteMem(scope, m) {
+  if (!confirm("Delete this memory?")) return;
+  try {
+    const r = scope === "story"
+      ? await api.deleteStoryMemory(state.story.id, m.id)
+      : await api.deleteCharMemory(state.memCharId, m.id);
+    if (!r.ok) throw new Error("server " + r.status);
+    await renderMemories();
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
+// ---------- relationship (character ↔ you) ----------
+function affinityBand(a) {
+  a = +a || 0;
+  if (a <= -60) return "hostile and distrustful";
+  if (a <= -20) return "wary and guarded";
+  if (a < 20) return "neutral — still getting acquainted";
+  if (a < 60) return "warm and friendly";
+  return "deeply attached and trusting";
+}
+
+function renderRelBadge() {
+  const badge = $("#rel-badge");
+  if (!badge) return;
+  const show = !!state.story && !isGroupStory() && !!currentCharacter();
+  badge.classList.toggle("hidden", !show);
+  if (!show) return;
+  const rel = state.story.relationship || { affinity: 0, status: "" };
+  const aff = +rel.affinity || 0;
+  const label = (rel.status && rel.status.trim()) || affinityBand(aff);
+  const pct = Math.round((aff + 100) / 2);                    // -100..100 -> 0..100
+  const tone = aff <= -20 ? "cold" : (aff >= 20 ? "warm" : "neutral");
+  badge.innerHTML = `<span class="rel-emoji">💗</span><span class="rel-label">${escapeHtml(label)}</span>` +
+    `<span class="rel-bar ${tone}"><span class="rel-fill" style="width:${pct}%"></span></span>`;
+  badge.title = `${(currentCharacter() || {}).name || "They"}: ${affinityBand(aff)} (affinity ${aff}). Click to adjust.`;
+}
+
+async function openRelModal() {
+  if (!state.story) return;
+  let rel;
+  try { rel = await api.relationship(state.story.id); }
+  catch (e) { showToast("⚠️ " + e.message); return; }
+  state.story.relationship = { affinity: rel.affinity, status: rel.status, updated: rel.updated,
+                               history: rel.history, last_delta: rel.last_delta };
+  $("#rel-char-name").textContent = (currentCharacter() || {}).name || state.story.character_name || "the character";
+  $("#rel-aff").value = rel.affinity || 0;
+  $("#rel-aff-val").textContent = rel.affinity || 0;
+  $("#rel-band").textContent = rel.band || affinityBand(rel.affinity);
+  $("#rel-status").value = rel.status || "";
+  const last = (rel.history || [])[(rel.history || []).length - 1];
+  $("#rel-reason").textContent = (last && last.reason) ? `Last shift: ${last.reason}` : "";
+  $("#rel-modal").classList.remove("hidden");
+}
+
+async function saveRelFromModal() {
+  if (!state.story) return;
+  const affinity = parseInt($("#rel-aff").value, 10);
+  const status = $("#rel-status").value.trim();
+  try {
+    const rel = await api.setRelationship(state.story.id, { affinity, status });
+    state.story.relationship = { affinity: rel.affinity, status: rel.status,
+                                 updated: rel.updated, history: rel.history };
+    $("#rel-modal").classList.add("hidden");
+    renderRelBadge();
+    showToast("💗 Relationship updated");
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
 // ---------- settings drawer ----------
 async function openSettings() {
   if (!state.story) return;
@@ -912,7 +1167,11 @@ async function openSettings() {
   $("#s-rag").checked = !!s.rag_enabled;
   $("#s-embed").value = s.embed_model || "nomic-embed-text";
   $("#s-inner").checked = !!s.inner_monologue;
+  $("#s-automem").checked = s.auto_memory !== false;   // default on
+  $("#s-autorel").checked = s.auto_relationship !== false;  // default on
   $("#s-scene").value = state.story.scene || "";
+  $("#s-tags").value = (state.story.tags || []).join(", ");
+  renderBgPreview();
   $("#s-ban").value = s.ban_phrases || "";
   $("#s-preset-name").value = "";
   await loadSamplerPresets();
@@ -959,11 +1218,14 @@ async function saveSettings() {
   const settings = {
     ...currentSamplerInputs(),
     rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
+    auto_memory: $("#s-automem").checked, auto_relationship: $("#s-autorel").checked,
   };
-  const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value };
+  const tags = [...new Set($("#s-tags").value.split(",").map((t) => t.trim()).filter(Boolean))];
+  const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value, tags };
   state.story = await api.storyMeta(state.story.id, patch);
   $("#settings-modal").classList.add("hidden");
   updateHeader();
+  refreshStories();
 }
 
 // ---------- models ----------
@@ -1128,10 +1390,66 @@ function init() {
   $("#branch-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveBranchFromModal(); } });
   bindModal("#branch-modal", []);
 
+  // memories (per-story + per-character)
+  $("#memory-btn").onclick = openMemoryModal;
+  $("#memory-cancel").onclick = () => $("#memory-modal").classList.add("hidden");
+  $("#mem-add-btn").onclick = async () => {
+    const t = $("#mem-add-input").value.trim(); if (!t || !state.story) return;
+    try { await api.addStoryMemory(state.story.id, t); $("#mem-add-input").value = ""; await renderMemories(); }
+    catch (e) { showToast("⚠️ " + e.message); }
+  };
+  $("#mem-add-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#mem-add-btn").click(); } });
+  $("#mem-char-add-btn").onclick = async () => {
+    const t = $("#mem-char-add-input").value.trim(); if (!t || !state.memCharId) return;
+    try { await api.addCharMemory(state.memCharId, t); $("#mem-char-add-input").value = ""; await renderMemories(); }
+    catch (e) { showToast("⚠️ " + e.message); }
+  };
+  $("#mem-char-add-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#mem-char-add-btn").click(); } });
+  bindModal("#memory-modal", []);
+
+  // relationship (character ↔ you)
+  $("#rel-badge").onclick = openRelModal;
+  $("#rel-save").onclick = saveRelFromModal;
+  $("#rel-cancel").onclick = () => $("#rel-modal").classList.add("hidden");
+  $("#rel-aff").addEventListener("input", (e) => {
+    $("#rel-aff-val").textContent = e.target.value;
+    $("#rel-band").textContent = affinityBand(e.target.value);
+  });
+  bindModal("#rel-modal", []);
+
   // settings drawer
   $("#settings-btn").onclick = openSettings;
   $("#settings-cancel").onclick = () => $("#settings-modal").classList.add("hidden");
   $("#settings-save").onclick = saveSettings;
+
+  // scene background (uploads/clears immediately, like avatars)
+  $("#s-bg-upload").onclick = () => { if (state.story) $("#s-bg-file").click(); };
+  $("#s-bg-file").addEventListener("change", (e) => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (!f || !state.story) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = String(reader.result).split(",").pop();
+      const ext = (f.name.split(".").pop() || "png").toLowerCase();
+      try {
+        state.story = await api.setBackground(state.story.id, b64, ext);
+        renderBgPreview(); applyBackground(); refreshStories();
+        showToast("🖼 Background set");
+      } catch (err) { showToast("⚠️ " + err.message); }
+    };
+    reader.readAsDataURL(f);
+  });
+  $("#s-bg-clear").onclick = async () => {
+    if (!state.story) return;
+    if (!state.story.background_image) { renderBgPreview(); return; }
+    try {
+      const r = await api.clearBackground(state.story.id);
+      if (!r.ok) throw new Error("server " + r.status);
+      state.story = await r.json();
+      renderBgPreview(); applyBackground(); refreshStories();
+      showToast("🖼 Background removed");
+    } catch (e) { showToast("⚠️ " + e.message); }
+  };
   $("#s-temp").addEventListener("input", (e) => $("#s-temp-val").textContent = (+e.target.value).toFixed(2));
   $("#s-ctx").addEventListener("input", (e) => $("#s-ctx-val").textContent = e.target.value);
   $("#s-pred").addEventListener("input", (e) => $("#s-pred-val").textContent = e.target.value);

@@ -19,10 +19,12 @@ Tavern character-card import.
 - 👥 **Group scenes** — put two or more characters in one story. A character
   replies automatically on your turn (mention a name to direct it), or tap a
   character to make them speak. Each reply is labelled with who's talking.
-- 🧠 **Real memory** — a keyword **lorebook** (world facts that surface only when
-  relevant), **rolling summarization** of older events, a floating **author's
-  note**, and optional **semantic recall (RAG)** via local embeddings keep long
-  stories coherent instead of goldfish-ing.
+- 🧠 **Real memory** — a durable **memory bank** the bot keeps and reuses (per
+  story *and* per character, so a character remembers you across scenes),
+  **auto-captured** as you play or curated by hand; plus a keyword **lorebook**,
+  **rolling summarization** of older events, a floating **author's note**, and
+  optional **semantic recall (RAG)** via local embeddings — long stories stay
+  coherent instead of goldfish-ing.
 - 💬 **Immersive streaming** — in-character replies that type out live, actions
   in *italics*, with a scope-controlled prompt that stops the model speaking for
   you or breaking character. Optional **text-to-speech** reads replies aloud.
@@ -32,6 +34,14 @@ Tavern character-card import.
 - 🌿 **Branches** — save the current story as a named timeline, keep playing, then
   restore any branch to explore a different path. Restoring auto-saves your live
   timeline first, so it's always reversible.
+- 💗 **Living relationships** — the character's regard for you (an **affinity**
+  meter and a status label that grows from "wary allies" toward "old friends")
+  and their **mood** drift on their own with how scenes play out, feed back into
+  how they treat you, and are yours to nudge by hand from a badge above the composer.
+- 🗂️ **Organize your library** — **tag** stories and filter the sidebar by tag,
+  **pin** favorite stories and characters to the top, and **search** by name.
+- 🖼️ **Scene backgrounds** — set a per-story backdrop image that sits behind the
+  chat (with an automatic readability scrim) for extra atmosphere.
 - 🪄 **AI assists** — **impersonate** (let the model draft *your* next line when
   you're stuck), **✨ generate a character** from a one-line concept, a
   **light/dark theme**, **story search**, and **keyboard shortcuts** (press `?`).
@@ -111,12 +121,19 @@ Your browser opens at **<http://localhost:8000>**. Pick a character and play.
    **›** at the end generates a new one), **↻** regenerate, **🎬** guided
    regenerate (give a note), **↳** continue, **📋** copy, **✎** edit, **🗑**
    delete from here.
-4. **⚙ Settings** (per story): model, persona, creativity, context size, reply
-   length, advanced samplers, saveable **sampler presets**, and a **banned
-   words & phrases** list to kill clichés.
+4. **⚙ Settings** (per story): model, persona, **tags** (to group & filter),
+   a **scene background** image, creativity, context size, reply length, advanced
+   samplers, saveable **sampler presets**, and a **banned words & phrases** list
+   to kill clichés. Click a story's **☆** (or a character's) to **pin** it to the top.
 5. The **author's note** bar above the composer is a private nudge to steer tone
    or what happens next — it's injected near the end of the prompt for max effect.
-6. **🌿 Branches** (header) save and restore alternate timelines; **⌨️** (or `?`)
+   The **💗 relationship badge** in that bar shows how the character feels about you
+   right now; it drifts as you play (toggle in Settings) and you can click it to set
+   the affinity and status by hand.
+6. **🧠 Memories** (header) shows what the bot remembers — add/edit/pin facts for
+   this story, or lasting ones the character carries into every story. With
+   auto-memory on (Settings, default), it fills this in for you as you play.
+7. **🌿 Branches** (header) save and restore alternate timelines; **⌨️** (or `?`)
    lists keyboard shortcuts (`←/→` swap versions, `R` regenerate, `G` guided,
    `C` focus the composer, `Esc` close a dialog).
 
