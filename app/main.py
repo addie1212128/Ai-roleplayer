@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from . import cards, context, memory, rag, storage
+from . import cards, context, memory, rag, relationship, storage
 from .samplers import DEFAULTS, build_options, pick_sampler_fields, preset_for
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
@@ -182,6 +182,11 @@ class MemoryCreate(BaseModel):
 class MemoryEdit(BaseModel):
     text: Optional[str] = None
     pinned: Optional[bool] = None
+
+
+class RelationshipEdit(BaseModel):
+    affinity: Optional[int] = None
+    status: Optional[str] = None
 
 
 class GenCharReq(BaseModel):
@@ -670,6 +675,7 @@ async def chat(req: ChatReq):
             storage.save_story(story)
             summarized = False
             memorized = False
+            rel = None
             if action in ("send", "regenerate", "group_speak"):
                 summarized = await _maybe_summarize(story, model)
                 if settings.get("auto_memory", True):
@@ -677,6 +683,12 @@ async def chat(req: ChatReq):
                         memorized = await memory.auto_extract(story, character, model, OLLAMA_URL, user_name)
                     except Exception:
                         memorized = False  # memory capture must never break a turn
+                # Relationship + mood drift (single-character scenes only).
+                if settings.get("auto_relationship", True) and not _is_group(story):
+                    try:
+                        rel = await relationship.auto_update(story, character, model, OLLAMA_URL, user_name)
+                    except Exception:
+                        rel = None
 
             yield _sse({
                 "done": True,
@@ -687,6 +699,7 @@ async def chat(req: ChatReq):
                 "num_ctx": settings.get("num_ctx"),
                 "summarized": summarized,
                 "memorized": memorized,
+                "relationship": rel,
                 "debug": built["debug"],
             })
 
@@ -1159,6 +1172,36 @@ async def delete_char_memory(cid: str, mid: str):
     char["memories"] = kept
     storage.save_character(char)
     return {"ok": True}
+
+
+# --- relationship (per-story character↔user standing) -------------------------
+
+@app.get("/api/stories/{sid}/relationship")
+async def get_relationship(sid: str):
+    story = storage.get_story(sid)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    rel = story.get("relationship") or relationship.default_relationship()
+    return {**rel, "band": relationship.band(rel.get("affinity", 0)),
+            "auto_relationship": (story.get("settings") or {}).get("auto_relationship", True),
+            "is_group": _is_group(story)}
+
+
+@app.put("/api/stories/{sid}/relationship")
+async def set_relationship(sid: str, edit: RelationshipEdit):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        rel = story.get("relationship") or relationship.default_relationship()
+        if edit.affinity is not None:
+            rel["affinity"] = relationship.clamp(int(edit.affinity), -100, 100)
+        if edit.status is not None:
+            rel["status"] = edit.status.strip()[:60]
+        rel["updated"] = time.time()
+        story["relationship"] = rel
+        storage.save_story(story)
+        return {**rel, "band": relationship.band(rel.get("affinity", 0))}
 
 
 # --- branches (saved alternate timelines) -------------------------------------

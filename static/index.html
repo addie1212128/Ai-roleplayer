@@ -105,6 +105,7 @@
       <div id="group-bar" class="group-bar hidden"></div>
 
       <div id="an-bar" class="an-bar hidden">
+        <button id="rel-badge" type="button" class="rel-badge hidden" title="Relationship — click to adjust"></button>
         <select id="mood-select" title="Current mood of the character">
           <option value="">Mood…</option>
           <option>Happy</option><option>Sad</option><option>Angry</option><option>Afraid</option>
@@ -278,6 +279,7 @@
       <p class="hint">RAG surfaces relevant older moments via embeddings. Pull the model first: <code>ollama pull nomic-embed-text</code>. Leave off if unsure.</p>
       <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-inner" type="checkbox" style="width:auto" /> Inner monologue — characters show private ((thoughts))</label>
       <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-automem" type="checkbox" style="width:auto" /> Auto-memory — the bot extracts &amp; remembers key facts as you play (🧠 to view/edit)</label>
+      <label class="inline" style="gap:6px; color:var(--muted); font-size:13px"><input id="s-autorel" type="checkbox" style="width:auto" /> Auto-relationship — the character's feelings &amp; mood drift with how the scene goes (💗 badge to adjust)</label>
       <label class="field"><span>Scene <em>(where / when / who's present — set once for this story)</em></span><textarea id="s-scene" rows="2"></textarea></label>
       <div class="field">
         <span>Scene background <em>(a backdrop image shown behind the chat)</em></span>
@@ -336,6 +338,29 @@
         <div id="mem-char-list" class="mem-list"></div>
       </div>
       <div class="modal-actions"><span class="spacer"></span><button id="memory-cancel" class="ghost">Close</button></div>
+    </div>
+  </div>
+
+  <!-- Relationship editor -->
+  <div id="rel-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>💗 Relationship</h3>
+      <p class="hint">How <span id="rel-char-name">the character</span> feels about you. It drifts
+        on its own as you play (toggle in Settings) — or set it by hand here any time.</p>
+      <label class="field">
+        <span>Standing <output id="rel-aff-val"></output> <em id="rel-band"></em></span>
+        <input id="rel-aff" type="range" min="-100" max="100" step="5" />
+      </label>
+      <label class="field">
+        <span>Status label <em>(how they'd describe you — e.g. wary allies, budding trust)</em></span>
+        <input id="rel-status" type="text" placeholder="getting acquainted" />
+      </label>
+      <div id="rel-reason" class="hint"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="rel-cancel" class="ghost">Close</button>
+        <button id="rel-save" class="primary">Save</button>
+      </div>
     </div>
   </div>
 

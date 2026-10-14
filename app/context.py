@@ -423,6 +423,35 @@ def memories_block(story_memories: list[dict], char_memories: list[dict],
             f"treat as true and stay consistent with them]\n" + "\n".join(lines))
 
 
+def _affinity_band(affinity: int) -> str:
+    """Prompt-friendly descriptor for an affinity score (mirrors relationship.band)."""
+    a = int(affinity or 0)
+    if a <= -60:
+        return "hostile and distrustful"
+    if a <= -20:
+        return "wary and guarded"
+    if a < 20:
+        return "neutral — still getting acquainted"
+    if a < 60:
+        return "warm and friendly"
+    return "deeply attached and trusting"
+
+
+def relationship_line(rel: Optional[dict], char_name: str, user_name: str) -> str:
+    """A late, behavior-steering line describing how the character regards the
+    user right now. Empty for a fresh (neutral, unlabeled) relationship."""
+    if not rel:
+        return ""
+    aff = int(rel.get("affinity") or 0)
+    status = (rel.get("status") or "").strip()
+    if aff == 0 and not status:
+        return ""
+    extra = f" ({status})" if status else ""
+    return (f"[How {char_name} currently feels about {user_name}: {_affinity_band(aff)}{extra}. "
+            f"Let this color {char_name}'s tone, warmth, and choices, and let it shift naturally "
+            f"with what {user_name} does — never state it outright.]")
+
+
 def summaries_block(summaries: list[dict]) -> str:
     if not summaries:
         return ""
@@ -526,6 +555,10 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
     mood = (story.get("mood") or "").strip()
     if mood:
         depth_injections.append((3, {"role": "system", "content": f"[Right now, {char_name} is feeling {mood}.]"}))
+
+    rel_line = relationship_line(story.get("relationship"), char_name, user_name)
+    if rel_line:
+        depth_injections.append((3, {"role": "system", "content": rel_line}))
 
     phi = substitute((character.get("post_history_instructions") or "").strip(), char_name, user_name)
     if phi:

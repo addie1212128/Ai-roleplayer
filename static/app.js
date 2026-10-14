@@ -62,6 +62,8 @@ const api = {
   addCharMemory: (cid, text) => jsend(`/api/characters/${cid}/memories`, "POST", { text }),
   updateCharMemory: (cid, mid, patch) => jsend(`/api/characters/${cid}/memories/${mid}`, "PUT", patch),
   deleteCharMemory: (cid, mid) => fetch(`/api/characters/${cid}/memories/${mid}`, { method: "DELETE", headers: authH() }),
+  relationship: (id) => jget(`/api/stories/${id}/relationship`),
+  setRelationship: (id, patch) => jsend(`/api/stories/${id}/relationship`, "PUT", patch),
   listBranches: (id) => jget(`/api/stories/${id}/branches`),
   saveBranch: (id, name) => jsend(`/api/stories/${id}/branches`, "POST", { name }),
   restoreBranch: (id, bid) => jsend(`/api/stories/${id}/branches/${bid}/restore`, "POST"),
@@ -280,6 +282,7 @@ function updateHeader() {
     $("#mood-select").value = state.story.mood || "";
   }
   applyBackground();
+  renderRelBadge();
   renderGroupBar();
 }
 
@@ -377,7 +380,16 @@ async function chatAction(action, userText, charId, note) {
         let obj; try { obj = JSON.parse(line); } catch { continue; }
         if (obj.token) { full += obj.token; tmpBubble.innerHTML = formatContent(stripThink(full)); scrollToBottom(); }
         else if (obj.error) { errorMsg = obj.error; tmpBubble.classList.remove("cursor"); tmpBubble.innerHTML = formatContent("⚠️ " + obj.error); }
-        else if (obj.done) { updateCtxMeter(obj.prompt_tokens, obj.num_ctx); if (obj.memorized) showToast("🧠 Remembered something new"); }
+        else if (obj.done) {
+          updateCtxMeter(obj.prompt_tokens, obj.num_ctx);
+          if (obj.memorized) showToast("🧠 Remembered something new");
+          if (obj.relationship) {
+            state.story.relationship = obj.relationship;
+            const d = obj.relationship.last_delta || 0;
+            if (d) showToast((d > 0 ? "💗 " : "💔 ") + ((currentCharacter() || {}).name || "They") +
+                             (d > 0 ? " warmed toward you" : " cooled toward you"));
+          }
+        }
       }
     }
   } catch (e) {
@@ -1077,6 +1089,63 @@ async function deleteMem(scope, m) {
   } catch (e) { showToast("⚠️ " + e.message); }
 }
 
+// ---------- relationship (character ↔ you) ----------
+function affinityBand(a) {
+  a = +a || 0;
+  if (a <= -60) return "hostile and distrustful";
+  if (a <= -20) return "wary and guarded";
+  if (a < 20) return "neutral — still getting acquainted";
+  if (a < 60) return "warm and friendly";
+  return "deeply attached and trusting";
+}
+
+function renderRelBadge() {
+  const badge = $("#rel-badge");
+  if (!badge) return;
+  const show = !!state.story && !isGroupStory() && !!currentCharacter();
+  badge.classList.toggle("hidden", !show);
+  if (!show) return;
+  const rel = state.story.relationship || { affinity: 0, status: "" };
+  const aff = +rel.affinity || 0;
+  const label = (rel.status && rel.status.trim()) || affinityBand(aff);
+  const pct = Math.round((aff + 100) / 2);                    // -100..100 -> 0..100
+  const tone = aff <= -20 ? "cold" : (aff >= 20 ? "warm" : "neutral");
+  badge.innerHTML = `<span class="rel-emoji">💗</span><span class="rel-label">${escapeHtml(label)}</span>` +
+    `<span class="rel-bar ${tone}"><span class="rel-fill" style="width:${pct}%"></span></span>`;
+  badge.title = `${(currentCharacter() || {}).name || "They"}: ${affinityBand(aff)} (affinity ${aff}). Click to adjust.`;
+}
+
+async function openRelModal() {
+  if (!state.story) return;
+  let rel;
+  try { rel = await api.relationship(state.story.id); }
+  catch (e) { showToast("⚠️ " + e.message); return; }
+  state.story.relationship = { affinity: rel.affinity, status: rel.status, updated: rel.updated,
+                               history: rel.history, last_delta: rel.last_delta };
+  $("#rel-char-name").textContent = (currentCharacter() || {}).name || state.story.character_name || "the character";
+  $("#rel-aff").value = rel.affinity || 0;
+  $("#rel-aff-val").textContent = rel.affinity || 0;
+  $("#rel-band").textContent = rel.band || affinityBand(rel.affinity);
+  $("#rel-status").value = rel.status || "";
+  const last = (rel.history || [])[(rel.history || []).length - 1];
+  $("#rel-reason").textContent = (last && last.reason) ? `Last shift: ${last.reason}` : "";
+  $("#rel-modal").classList.remove("hidden");
+}
+
+async function saveRelFromModal() {
+  if (!state.story) return;
+  const affinity = parseInt($("#rel-aff").value, 10);
+  const status = $("#rel-status").value.trim();
+  try {
+    const rel = await api.setRelationship(state.story.id, { affinity, status });
+    state.story.relationship = { affinity: rel.affinity, status: rel.status,
+                                 updated: rel.updated, history: rel.history };
+    $("#rel-modal").classList.add("hidden");
+    renderRelBadge();
+    showToast("💗 Relationship updated");
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
 // ---------- settings drawer ----------
 async function openSettings() {
   if (!state.story) return;
@@ -1099,6 +1168,7 @@ async function openSettings() {
   $("#s-embed").value = s.embed_model || "nomic-embed-text";
   $("#s-inner").checked = !!s.inner_monologue;
   $("#s-automem").checked = s.auto_memory !== false;   // default on
+  $("#s-autorel").checked = s.auto_relationship !== false;  // default on
   $("#s-scene").value = state.story.scene || "";
   $("#s-tags").value = (state.story.tags || []).join(", ");
   renderBgPreview();
@@ -1148,7 +1218,7 @@ async function saveSettings() {
   const settings = {
     ...currentSamplerInputs(),
     rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
-    auto_memory: $("#s-automem").checked,
+    auto_memory: $("#s-automem").checked, auto_relationship: $("#s-autorel").checked,
   };
   const tags = [...new Set($("#s-tags").value.split(",").map((t) => t.trim()).filter(Boolean))];
   const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value, tags };
@@ -1336,6 +1406,16 @@ function init() {
   };
   $("#mem-char-add-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#mem-char-add-btn").click(); } });
   bindModal("#memory-modal", []);
+
+  // relationship (character ↔ you)
+  $("#rel-badge").onclick = openRelModal;
+  $("#rel-save").onclick = saveRelFromModal;
+  $("#rel-cancel").onclick = () => $("#rel-modal").classList.add("hidden");
+  $("#rel-aff").addEventListener("input", (e) => {
+    $("#rel-aff-val").textContent = e.target.value;
+    $("#rel-band").textContent = affinityBand(e.target.value);
+  });
+  bindModal("#rel-modal", []);
 
   // settings drawer
   $("#settings-btn").onclick = openSettings;

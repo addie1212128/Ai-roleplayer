@@ -376,6 +376,22 @@ def test_memory_logic():
     check("memory: empty banks -> no block", context.memories_block([], [], "Aria", 1000) == "")
 
 
+def test_relationship_logic():
+    from app import relationship as rel
+    check("rel: band neutral", "neutral" in rel.band(0))
+    check("rel: band hostile", rel.band(-80) == "hostile and distrustful")
+    check("rel: band devoted", "attached" in rel.band(90))
+    check("rel: clamp bounds", rel.clamp(250, -100, 100) == 100 and rel.clamp(-250, -100, 100) == -100)
+    check("rel: parse object from prose",
+          (rel._extract_json_object('ok {"affinity_delta": 5, "status": "x"} tail') or {}).get("affinity_delta") == 5)
+    check("rel: parse rejects non-object", rel._extract_json_object("nope") is None)
+    # injection line: neutral+empty -> none; non-neutral -> band + status + both names
+    check("rel: line empty when neutral", context.relationship_line({"affinity": 0, "status": ""}, "Aria", "Sam") == "")
+    line = context.relationship_line({"affinity": 70, "status": "close friends"}, "Aria", "Sam")
+    check("rel: line carries band + status + names",
+          "Aria" in line and "Sam" in line and "close friends" in line and "attached" in line, line)
+
+
 # ============================================================ integration test
 
 _last_payload = {}
@@ -417,6 +433,10 @@ def _start_fake_ollama(port):
             if "memory archivist" in sysmsg:     # memory-extraction path -> JSON array
                 return JSONResponse({"message": {"content":
                     '["Sam is a tired traveler.", "Aria runs the tavern on a rainy night."]'},
+                    "done": True})
+            if "track the emotional arc" in sysmsg:   # relationship-assessment path -> JSON object
+                return JSONResponse({"message": {"content":
+                    '{"affinity_delta": 8, "status": "budding trust", "mood": "Happy", "reason": "shared a warm moment"}'},
                     "done": True})
             return JSONResponse({"message": {"content": "- A thing happened."}, "done": True})
         _last_payload.clear()
@@ -836,6 +856,44 @@ def test_integration():
     check("api: auto-memory off halts extraction",
           client.get(f"/api/stories/{astory['id']}").json().get("memory_cursor", 0) == cursor_before)
 
+    # --- relationship: default, manual set + clamp, injection, auto-evolve --
+    rstory2 = client.post("/api/stories", json={"title": "Rel", "character_id": char["id"],
+                                                "character_name": "Aria", "model": "mistral-nemo:12b",
+                                                "messages": [{"role": "assistant", "content": "Welcome in."}]}).json()
+    rel0 = client.get(f"/api/stories/{rstory2['id']}/relationship").json()
+    check("api: relationship defaults to neutral", rel0["affinity"] == 0 and bool(rel0.get("band")), str(rel0))
+    relset = client.put(f"/api/stories/{rstory2['id']}/relationship",
+                        json={"affinity": 150, "status": "sworn enemies"}).json()
+    check("api: relationship affinity clamped to 100", relset["affinity"] == 100, str(relset["affinity"]))
+    check("api: relationship status set", relset["status"] == "sworn enemies")
+    dbg2 = client.get(f"/api/debug/prompt?story_id={rstory2['id']}").json()
+    allc2 = "\n".join(m["content"] for m in dbg2["messages"])
+    check("api: relationship injected into prompt", "sworn enemies" in allc2 and "feels about" in allc2, allc2[:200])
+
+    # auto-evolution: enough new turns -> affinity delta + status + mood drift
+    seed2 = [{"role": "assistant", "content": "Welcome in."}]
+    for i in range(3):
+        seed2.append({"role": "user", "content": f"kind word {i}"})
+        seed2.append({"role": "assistant", "content": f"reply {i}"})
+    estory = client.post("/api/stories", json={"title": "Evolve", "character_id": char["id"],
+                                               "character_name": "Aria", "model": "mistral-nemo:12b",
+                                               "messages": seed2}).json()
+    er = client.post("/api/chat", json={"story_id": estory["id"], "action": "send", "user_message": "I help you tidy up"})
+    edone = [json.loads(l[6:]) for l in er.text.splitlines() if l.startswith("data: ") and '"done"' in l]
+    check("api: relationship returned on the turn", edone and bool(edone[-1].get("relationship")), er.text[-200:])
+    efetched = client.get(f"/api/stories/{estory['id']}").json()
+    check("api: affinity evolved upward", efetched.get("relationship", {}).get("affinity") == 8, str(efetched.get("relationship")))
+    check("api: status evolved", efetched.get("relationship", {}).get("status") == "budding trust")
+    check("api: mood drifted from assessment", efetched.get("mood") == "Happy", str(efetched.get("mood")))
+    check("api: rel cursor advanced", efetched.get("rel_cursor", 0) >= 7)
+    client.put(f"/api/stories/{estory['id']}/meta", json={"settings": {"auto_relationship": False}})
+    cb = client.get(f"/api/stories/{estory['id']}").json().get("rel_cursor", 0)
+    client.post("/api/chat", json={"story_id": estory["id"], "action": "send", "user_message": "and more"})
+    check("api: auto-relationship off halts evolution",
+          client.get(f"/api/stories/{estory['id']}").json().get("rel_cursor", 0) == cb)
+    grel = client.get(f"/api/stories/{gstory['id']}/relationship").json()
+    check("api: group story relationship flagged is_group", grel.get("is_group") is True)
+
 
 def main():
     print("Running AI Roleplayer backend self-test...\n")
@@ -844,7 +902,7 @@ def main():
                test_macro_resolution, test_depth_zero_and_est, test_cards_hardening,
                test_cards, test_rag, test_paper_features, test_ban_phrases,
                test_storage_atomic, test_storage_id_safety, test_memory_logic,
-               test_integration]:
+               test_relationship_logic, test_integration]:
         try:
             fn()
         except Exception as e:

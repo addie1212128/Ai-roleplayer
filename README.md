@@ -34,6 +34,10 @@ Tavern character-card import.
 - 🌿 **Branches** — save the current story as a named timeline, keep playing, then
   restore any branch to explore a different path. Restoring auto-saves your live
   timeline first, so it's always reversible.
+- 💗 **Living relationships** — the character's regard for you (an **affinity**
+  meter and a status label that grows from "wary allies" toward "old friends")
+  and their **mood** drift on their own with how scenes play out, feed back into
+  how they treat you, and are yours to nudge by hand from a badge above the composer.
 - 🗂️ **Organize your library** — **tag** stories and filter the sidebar by tag,
   **pin** favorite stories and characters to the top, and **search** by name.
 - 🖼️ **Scene backgrounds** — set a per-story backdrop image that sits behind the
@@ -123,6 +127,9 @@ Your browser opens at **<http://localhost:8000>**. Pick a character and play.
    to kill clichés. Click a story's **☆** (or a character's) to **pin** it to the top.
 5. The **author's note** bar above the composer is a private nudge to steer tone
    or what happens next — it's injected near the end of the prompt for max effect.
+   The **💗 relationship badge** in that bar shows how the character feels about you
+   right now; it drifts as you play (toggle in Settings) and you can click it to set
+   the affinity and status by hand.
 6. **🧠 Memories** (header) shows what the bot remembers — add/edit/pin facts for
    this story, or lasting ones the character carries into every story. With
    auto-memory on (Settings, default), it fills this in for you as you play.

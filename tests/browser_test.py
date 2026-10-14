@@ -65,6 +65,10 @@ def start_fake_ollama(port):
                     "done": True})
             if "memory archivist" in sysmsg:
                 return JSONResponse({"message": {"content": '["A fact worth remembering."]'}, "done": True})
+            if "track the emotional arc" in sysmsg:
+                return JSONResponse({"message": {"content":
+                    '{"affinity_delta": 5, "status": "warming up", "mood": "Calm", "reason": "pleasant chat"}'},
+                    "done": True})
             return JSONResponse({"message": {"content": "- summary."}, "done": True})
 
         async def gen():
@@ -219,6 +223,7 @@ def main():
         page.wait_for_selector("#settings-modal:not(.hidden)", timeout=3000)
         check("UI: tags field present", page.locator("#s-tags").count() == 1)
         check("UI: auto-memory toggle present", page.locator("#s-automem").count() == 1)
+        check("UI: auto-relationship toggle present", page.locator("#s-autorel").count() == 1)
         check("UI: scene-background controls present",
               page.locator("#s-bg-preview").count() == 1 and page.locator("#s-bg-upload").count() == 1
               and page.locator("#s-bg-clear").count() == 1)
@@ -268,6 +273,23 @@ def main():
         page.keyboard.press("Escape")
         page.wait_for_function("document.querySelector('#memory-modal').classList.contains('hidden')", timeout=3000)
         check("UI: Escape closes memory drawer", page.locator("#memory-modal.hidden").count() == 1)
+
+        # ---- relationship badge + editor ----
+        check("UI: relationship badge visible", page.locator("#rel-badge:not(.hidden)").count() == 1)
+        page.click("#rel-badge")
+        page.wait_for_selector("#rel-modal:not(.hidden)", timeout=3000)
+        check("UI: relationship modal opens", page.locator("#rel-aff").count() == 1)
+        page.fill("#rel-status", "test allies")
+        page.evaluate("const s=document.querySelector('#rel-aff'); s.value=60; s.dispatchEvent(new Event('input'));")
+        check("UI: band label updates with the slider",
+              ("attached" in page.inner_text("#rel-band")) or ("warm" in page.inner_text("#rel-band")),
+              page.inner_text("#rel-band"))
+        page.click("#rel-save")
+        page.wait_for_function("document.querySelector('#rel-modal').classList.contains('hidden')", timeout=3000)
+        page.wait_for_function(
+            "document.querySelector('#rel-badge') && document.querySelector('#rel-badge').textContent.includes('test allies')",
+            timeout=4000)
+        check("UI: badge reflects the saved relationship", "test allies" in page.inner_text("#rel-badge"))
 
         # character editor opens with advanced fields
         page.click("#edit-active-char")

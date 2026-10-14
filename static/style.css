@@ -230,7 +230,18 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .group-pick .em { font-size: 20px; }
 .group-pick img.av { width: 26px; height: 26px; }
 
-.an-bar { padding: 8px 20px 0; background: var(--panel); display: flex; gap: 8px; align-items: center; }
+.an-bar { padding: 8px 20px 0; background: var(--panel); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* Relationship badge (lives in the author's-note bar) */
+.rel-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 20px; background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer; flex: 0 0 auto; max-width: 260px; }
+.rel-badge:hover { border-color: var(--accent); }
+.rel-badge .rel-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+.rel-badge .rel-bar { width: 52px; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; flex: none; }
+.rel-badge .rel-fill { display: block; height: 100%; background: var(--accent); }
+.rel-badge .rel-bar.cold .rel-fill { background: var(--accent-2); }
+.rel-badge .rel-bar.warm .rel-fill { background: linear-gradient(90deg, var(--accent), var(--danger)); }
+#rel-band { font-style: normal; opacity: .8; }
+#rel-reason:empty { display: none; }
 .an-bar input { background: var(--bg); border-color: var(--border); font-size: 13px; flex: 1; }
 .an-bar select { width: auto; flex: 0 0 auto; background: var(--bg); font-size: 13px; }
 
