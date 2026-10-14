@@ -386,6 +386,43 @@ def label_group_history(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _mem_norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower()).strip(" .!?,;:")
+
+
+def memories_block(story_memories: list[dict], char_memories: list[dict],
+                   char_name: str, budget_tokens: int) -> str:
+    """Render the durable-memory banks into one '[What X remembers]' block.
+
+    Combines the character's lasting memories with this story's, de-duplicates
+    across the two, lists pinned facts first then newest, and stops once the
+    token budget is spent. Returns '' when there's nothing to inject.
+    """
+    combined = list(char_memories or []) + list(story_memories or [])
+    if not combined:
+        return ""
+    # Pinned first, then most-recent; stable within each group.
+    ordered = sorted(combined, key=lambda m: (not m.get("pinned"), -(m.get("created") or 0)))
+    lines: list[str] = []
+    seen: set[str] = set()
+    used = 0
+    for m in ordered:
+        text = (m.get("text") or "").strip()
+        n = _mem_norm(text)
+        if not n or n in seen:
+            continue
+        cost = est_tokens(text) + 2
+        if lines and used + cost > budget_tokens:
+            break
+        seen.add(n)
+        used += cost
+        lines.append(f"- {text}")
+    if not lines:
+        return ""
+    return (f"[What {char_name} remembers — established facts from earlier; "
+            f"treat as true and stay consistent with them]\n" + "\n".join(lines))
+
+
 def summaries_block(summaries: list[dict]) -> str:
     if not summaries:
         return ""
@@ -467,6 +504,10 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
     lore = scan_lorebook(lorebook, history_all, lore_budget)
 
     summaries = summaries_block(story.get("summaries", []))
+    mem_budget = max(256, int(num_ctx * 0.18))
+    memories = substitute(
+        memories_block(story.get("memories", []), character.get("memories", []), char_name, mem_budget),
+        char_name, user_name)
     examples = examples_block_text(character.get("example_dialogue", ""), char_name, user_name)
     pin_examples = bool(settings.get("pin_examples", False))
 
@@ -502,6 +543,8 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
     head: list[dict] = [{"role": "system", "content": system_block}]
     if scene:
         head.append({"role": "system", "content": "[Current scene]\n" + scene})
+    if memories:
+        head.append({"role": "system", "content": memories})
     if lore.get("before"):
         head.append({"role": "system", "content": lore["before"]})
     if summaries:
@@ -551,6 +594,7 @@ def assemble_prompt(story: dict, character: dict, persona: Optional[dict],
         "example_tokens": example_tokens if include_examples else 0,
         "history_messages_kept": len(history),
         "history_messages_total": len(history_all),
+        "memories_injected": memories.count("\n- "),
         "lore_fired": lore.get("fired", []),
         "dropped": dropped,
         "sections": [m["role"] for m in messages],

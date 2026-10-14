@@ -265,6 +265,21 @@ img.av { width: 30px; height: 30px; border-radius: 8px; object-fit: cover; displ
 .bg-preview img { width: 100%; height: 100%; object-fit: cover; }
 .bg-actions { display: flex; flex-direction: column; gap: 6px; }
 
+/* ---------- Memories ---------- */
+.mem-section { display: flex; flex-direction: column; gap: 8px; }
+.mem-head { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: 4px; }
+.mem-list { display: flex; flex-direction: column; gap: 6px; max-height: 30vh; overflow-y: auto; }
+.mem-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); }
+.mem-row.pinned { border-color: var(--accent); }
+.mem-text { flex: 1; min-width: 0; line-height: 1.4; }
+.mem-edit { flex: 1; }
+.mem-auto { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 1px 5px; flex: none; }
+.mem-acts { display: flex; gap: 2px; flex: none; margin-left: auto; }
+.mem-acts .act { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 2px 5px; border-radius: 6px; }
+.mem-acts .act:hover { color: var(--accent); background: var(--panel); }
+.mem-acts .act.del:hover { color: var(--danger); }
+.mem-acts .act.pin.on { color: var(--accent); }
+
 /* ---------- Greeting chooser ---------- */
 .greet-option { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; cursor: pointer; line-height: 1.5; }
 .greet-option:hover { border-color: var(--accent); background: var(--panel-2); }

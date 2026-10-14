@@ -55,6 +55,13 @@ const api = {
   storyMeta: (id, patch) => jsend(`/api/stories/${id}/meta`, "PUT", patch),
   setBackground: (id, data_b64, ext) => jsend(`/api/stories/${id}/background`, "POST", { data_b64, ext }),
   clearBackground: (id) => fetch(`/api/stories/${id}/background`, { method: "DELETE", headers: authH() }),
+  memories: (id) => jget(`/api/stories/${id}/memories`),
+  addStoryMemory: (id, text) => jsend(`/api/stories/${id}/memories`, "POST", { text }),
+  updateStoryMemory: (id, mid, patch) => jsend(`/api/stories/${id}/memories/${mid}`, "PUT", patch),
+  deleteStoryMemory: (id, mid) => fetch(`/api/stories/${id}/memories/${mid}`, { method: "DELETE", headers: authH() }),
+  addCharMemory: (cid, text) => jsend(`/api/characters/${cid}/memories`, "POST", { text }),
+  updateCharMemory: (cid, mid, patch) => jsend(`/api/characters/${cid}/memories/${mid}`, "PUT", patch),
+  deleteCharMemory: (cid, mid) => fetch(`/api/characters/${cid}/memories/${mid}`, { method: "DELETE", headers: authH() }),
   listBranches: (id) => jget(`/api/stories/${id}/branches`),
   saveBranch: (id, name) => jsend(`/api/stories/${id}/branches`, "POST", { name }),
   restoreBranch: (id, bid) => jsend(`/api/stories/${id}/branches/${bid}/restore`, "POST"),
@@ -263,6 +270,7 @@ function updateHeader() {
     : (char ? char.name : (state.story ? state.story.title : "Pick a character to begin"));
   const open = !!state.story;
   $("#edit-active-char").classList.toggle("hidden", !char);
+  $("#memory-btn").classList.toggle("hidden", !open);
   $("#branch-btn").classList.toggle("hidden", !open);
   $("#settings-btn").classList.toggle("hidden", !open);
   $("#composer").classList.toggle("hidden", !open);
@@ -369,7 +377,7 @@ async function chatAction(action, userText, charId, note) {
         let obj; try { obj = JSON.parse(line); } catch { continue; }
         if (obj.token) { full += obj.token; tmpBubble.innerHTML = formatContent(stripThink(full)); scrollToBottom(); }
         else if (obj.error) { errorMsg = obj.error; tmpBubble.classList.remove("cursor"); tmpBubble.innerHTML = formatContent("⚠️ " + obj.error); }
-        else if (obj.done) { updateCtxMeter(obj.prompt_tokens, obj.num_ctx); }
+        else if (obj.done) { updateCtxMeter(obj.prompt_tokens, obj.num_ctx); if (obj.memorized) showToast("🧠 Remembered something new"); }
       }
     }
   } catch (e) {
@@ -964,6 +972,111 @@ async function restoreBranch(b) {
   } catch (e) { showToast("⚠️ " + e.message); }
 }
 
+// ---------- memories (per-story + per-character) ----------
+async function openMemoryModal() {
+  if (!state.story) return;
+  await renderMemories();
+  $("#memory-modal").classList.remove("hidden");
+  $("#mem-add-input").focus();
+}
+
+async function renderMemories() {
+  let data;
+  try { data = await api.memories(state.story.id); }
+  catch (e) { showToast("⚠️ " + e.message); return; }
+  state.memCharId = data.character_id || null;
+  $("#mem-char-name").textContent = data.character_name || "This character";
+  $("#mem-char-section").classList.toggle("hidden", !data.character_id);
+  renderMemList($("#mem-story-list"), data.story || [], "story");
+  renderMemList($("#mem-char-list"), data.character || [], "char");
+}
+
+function renderMemList(box, mems, scope) {
+  box.innerHTML = "";
+  if (!mems.length) { box.innerHTML = `<div class="hint">None yet.</div>`; return; }
+  const ordered = mems.slice().sort((a, b) =>
+    (Number(!!b.pinned) - Number(!!a.pinned)) || ((b.created || 0) - (a.created || 0)));
+  for (const m of ordered) {
+    const row = document.createElement("div");
+    row.className = "mem-row" + (m.pinned ? " pinned" : "");
+    const text = document.createElement("div");
+    text.className = "mem-text"; text.textContent = m.text;
+    row.appendChild(text);
+    if (m.source === "auto") {
+      const tag = document.createElement("span");
+      tag.className = "mem-auto"; tag.textContent = "auto"; tag.title = "Captured automatically";
+      row.appendChild(tag);
+    }
+    const acts = document.createElement("div"); acts.className = "mem-acts";
+    const mk = (label, title, fn, cls) => {
+      const b = document.createElement("button");
+      b.className = "act " + (cls || ""); b.textContent = label; b.title = title; b.onclick = fn; return b;
+    };
+    acts.appendChild(mk(m.pinned ? "📌" : "📍", m.pinned ? "Unpin" : "Pin (always remember)",
+      () => toggleMemPin(scope, m), m.pinned ? "pin on" : "pin"));
+    if (scope === "story" && state.memCharId)
+      acts.appendChild(mk("⭐", "Make this character always remember it", () => promoteMem(m)));
+    acts.appendChild(mk("✎", "Edit", () => editMem(scope, m, row)));
+    acts.appendChild(mk("🗑", "Delete", () => deleteMem(scope, m), "del"));
+    row.appendChild(acts);
+    box.appendChild(row);
+  }
+}
+
+async function toggleMemPin(scope, m) {
+  try {
+    if (scope === "story") await api.updateStoryMemory(state.story.id, m.id, { pinned: !m.pinned });
+    else await api.updateCharMemory(state.memCharId, m.id, { pinned: !m.pinned });
+    await renderMemories();
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
+async function promoteMem(m) {
+  if (!state.memCharId) return;
+  try {
+    await api.addCharMemory(state.memCharId, m.text);
+    const r = await api.deleteStoryMemory(state.story.id, m.id);
+    if (!r.ok) throw new Error("server " + r.status);
+    await renderMemories();
+    showToast("⭐ Now permanent for this character");
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
+function editMem(scope, m, row) {
+  if (row.querySelector(".mem-edit")) return;
+  const textEl = row.querySelector(".mem-text");
+  const acts = row.querySelector(".mem-acts");
+  const input = document.createElement("input");
+  input.className = "mem-edit"; input.type = "text"; input.value = m.text;
+  textEl.replaceWith(input);
+  if (acts) acts.classList.add("hidden");
+  input.focus();
+  const commit = async () => {
+    const t = input.value.trim();
+    if (!t) { renderMemories(); return; }
+    try {
+      if (scope === "story") await api.updateStoryMemory(state.story.id, m.id, { text: t });
+      else await api.updateCharMemory(state.memCharId, m.id, { text: t });
+    } catch (e) { showToast("⚠️ " + e.message); }
+    renderMemories();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { e.preventDefault(); renderMemories(); }
+  });
+}
+
+async function deleteMem(scope, m) {
+  if (!confirm("Delete this memory?")) return;
+  try {
+    const r = scope === "story"
+      ? await api.deleteStoryMemory(state.story.id, m.id)
+      : await api.deleteCharMemory(state.memCharId, m.id);
+    if (!r.ok) throw new Error("server " + r.status);
+    await renderMemories();
+  } catch (e) { showToast("⚠️ " + e.message); }
+}
+
 // ---------- settings drawer ----------
 async function openSettings() {
   if (!state.story) return;
@@ -985,6 +1098,7 @@ async function openSettings() {
   $("#s-rag").checked = !!s.rag_enabled;
   $("#s-embed").value = s.embed_model || "nomic-embed-text";
   $("#s-inner").checked = !!s.inner_monologue;
+  $("#s-automem").checked = s.auto_memory !== false;   // default on
   $("#s-scene").value = state.story.scene || "";
   $("#s-tags").value = (state.story.tags || []).join(", ");
   renderBgPreview();
@@ -1034,6 +1148,7 @@ async function saveSettings() {
   const settings = {
     ...currentSamplerInputs(),
     rag_enabled: $("#s-rag").checked, embed_model: $("#s-embed").value.trim() || "nomic-embed-text",
+    auto_memory: $("#s-automem").checked,
   };
   const tags = [...new Set($("#s-tags").value.split(",").map((t) => t.trim()).filter(Boolean))];
   const patch = { model: $("#s-model").value, persona_id: $("#s-persona").value || null, settings, scene: $("#s-scene").value, tags };
@@ -1204,6 +1319,23 @@ function init() {
   $("#branch-cancel").onclick = () => $("#branch-modal").classList.add("hidden");
   $("#branch-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveBranchFromModal(); } });
   bindModal("#branch-modal", []);
+
+  // memories (per-story + per-character)
+  $("#memory-btn").onclick = openMemoryModal;
+  $("#memory-cancel").onclick = () => $("#memory-modal").classList.add("hidden");
+  $("#mem-add-btn").onclick = async () => {
+    const t = $("#mem-add-input").value.trim(); if (!t || !state.story) return;
+    try { await api.addStoryMemory(state.story.id, t); $("#mem-add-input").value = ""; await renderMemories(); }
+    catch (e) { showToast("⚠️ " + e.message); }
+  };
+  $("#mem-add-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#mem-add-btn").click(); } });
+  $("#mem-char-add-btn").onclick = async () => {
+    const t = $("#mem-char-add-input").value.trim(); if (!t || !state.memCharId) return;
+    try { await api.addCharMemory(state.memCharId, t); $("#mem-char-add-input").value = ""; await renderMemories(); }
+    catch (e) { showToast("⚠️ " + e.message); }
+  };
+  $("#mem-char-add-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#mem-char-add-btn").click(); } });
+  bindModal("#memory-modal", []);
 
   // settings drawer
   $("#settings-btn").onclick = openSettings;

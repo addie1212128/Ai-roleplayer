@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
-from . import cards, context, rag, storage
+from . import cards, context, memory, rag, storage
 from .samplers import DEFAULTS, build_options, pick_sampler_fields, preset_for
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
@@ -173,6 +173,15 @@ class ImportReq(BaseModel):
 class AvatarReq(BaseModel):
     data_b64: str
     ext: str = "png"
+
+
+class MemoryCreate(BaseModel):
+    text: str
+
+
+class MemoryEdit(BaseModel):
+    text: Optional[str] = None
+    pinned: Optional[bool] = None
 
 
 class GenCharReq(BaseModel):
@@ -660,8 +669,14 @@ async def chat(req: ChatReq):
 
             storage.save_story(story)
             summarized = False
+            memorized = False
             if action in ("send", "regenerate", "group_speak"):
                 summarized = await _maybe_summarize(story, model)
+                if settings.get("auto_memory", True):
+                    try:
+                        memorized = await memory.auto_extract(story, character, model, OLLAMA_URL, user_name)
+                    except Exception:
+                        memorized = False  # memory capture must never break a turn
 
             yield _sse({
                 "done": True,
@@ -671,6 +686,7 @@ async def chat(req: ChatReq):
                 "eval_tokens": eval_tokens,
                 "num_ctx": settings.get("num_ctx"),
                 "summarized": summarized,
+                "memorized": memorized,
                 "debug": built["debug"],
             })
 
@@ -1024,6 +1040,125 @@ async def clear_background(sid: str):
                 pass
         story["background_image"] = None
         return _story_response(storage.save_story(story))
+
+
+# --- durable memories (per-story + per-character) -----------------------------
+
+@app.get("/api/stories/{sid}/memories")
+async def get_memories(sid: str):
+    story = storage.get_story(sid)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    cid = story.get("character_id")
+    char = storage.get_character(cid) if cid else None
+    return {
+        "story": story.get("memories", []),
+        "character": (char or {}).get("memories", []),
+        "character_id": cid if char else None,
+        "character_name": (char or {}).get("name") or story.get("character_name"),
+        "auto_memory": (story.get("settings") or {}).get("auto_memory", True),
+    }
+
+
+@app.post("/api/stories/{sid}/memories")
+async def add_story_memory(sid: str, req: MemoryCreate):
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Memory text is empty.")
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        mems = story.setdefault("memories", [])
+        mem = memory.new_memory(text, "manual")
+        mems.append(mem)
+        memory.enforce_cap(mems, memory.STORY_CAP)
+        storage.save_story(story)
+        return {"ok": True, "memory": mem}
+
+
+@app.put("/api/stories/{sid}/memories/{mid}")
+async def edit_story_memory(sid: str, mid: str, edit: MemoryEdit):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        mem = memory.find(story.get("memories", []), mid)
+        if not mem:
+            raise HTTPException(404, "Memory not found")
+        if edit.text is not None:
+            t = edit.text.strip()
+            if not t:
+                raise HTTPException(400, "Memory text is empty.")
+            mem["text"] = t[:memory.MAX_MEMORY_LEN]
+        if edit.pinned is not None:
+            mem["pinned"] = bool(edit.pinned)
+        storage.save_story(story)
+        return mem
+
+
+@app.delete("/api/stories/{sid}/memories/{mid}")
+async def delete_story_memory(sid: str, mid: str):
+    async with _lock(sid):
+        story = storage.get_story(sid)
+        if not story:
+            raise HTTPException(404, "Story not found")
+        mems = story.get("memories", [])
+        kept = [m for m in mems if m.get("id") != mid]
+        if len(kept) == len(mems):
+            raise HTTPException(404, "Memory not found")
+        story["memories"] = kept
+        storage.save_story(story)
+        return {"ok": True}
+
+
+@app.post("/api/characters/{cid}/memories")
+async def add_char_memory(cid: str, req: MemoryCreate):
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Memory text is empty.")
+    char = storage.get_character(cid)
+    if not char:
+        raise HTTPException(404, "Character not found")
+    mems = char.setdefault("memories", [])
+    mem = memory.new_memory(text, "manual")
+    mems.append(mem)
+    memory.enforce_cap(mems, memory.CHARACTER_CAP)
+    storage.save_character(char)
+    return {"ok": True, "memory": mem}
+
+
+@app.put("/api/characters/{cid}/memories/{mid}")
+async def edit_char_memory(cid: str, mid: str, edit: MemoryEdit):
+    char = storage.get_character(cid)
+    if not char:
+        raise HTTPException(404, "Character not found")
+    mem = memory.find(char.get("memories", []), mid)
+    if not mem:
+        raise HTTPException(404, "Memory not found")
+    if edit.text is not None:
+        t = edit.text.strip()
+        if not t:
+            raise HTTPException(400, "Memory text is empty.")
+        mem["text"] = t[:memory.MAX_MEMORY_LEN]
+    if edit.pinned is not None:
+        mem["pinned"] = bool(edit.pinned)
+    storage.save_character(char)
+    return mem
+
+
+@app.delete("/api/characters/{cid}/memories/{mid}")
+async def delete_char_memory(cid: str, mid: str):
+    char = storage.get_character(cid)
+    if not char:
+        raise HTTPException(404, "Character not found")
+    mems = char.get("memories", [])
+    kept = [m for m in mems if m.get("id") != mid]
+    if len(kept) == len(mems):
+        raise HTTPException(404, "Memory not found")
+    char["memories"] = kept
+    storage.save_character(char)
+    return {"ok": True}
 
 
 # --- branches (saved alternate timelines) -------------------------------------

@@ -346,6 +346,36 @@ def test_storage_atomic():
     check("storage: atomic (no .tmp left)", not any(storage.CHAR_DIR.glob("*.tmp")))
 
 
+def test_memory_logic():
+    from app import memory
+    # merge: case-insensitive dedupe
+    mems = []
+    added = memory.merge_memories(mems, ["Sam fears fire.", "sam fears fire", "Aria owns a dagger."], "auto", 80)
+    check("memory: merge dedupes case-insensitively", len(added) == 2 and len(mems) == 2, str([m["text"] for m in mems]))
+    # containment guard: a near-duplicate (subset/superset) isn't re-added
+    added2 = memory.merge_memories(mems, ["Sam fears fire badly."], "auto", 80)
+    check("memory: containment guard blocks near-dupes", added2 == [], str([m["text"] for m in mems]))
+    # cap: drops oldest UNPINNED first, always keeps pinned
+    cap_list = []
+    for i in range(5):
+        memory.merge_memories(cap_list, [f"fact {i}"], "auto", 99)
+    cap_list[0]["pinned"] = True  # pin the oldest
+    memory.enforce_cap(cap_list, 3)
+    texts = [m["text"] for m in cap_list]
+    check("memory: cap keeps pinned + newest", "fact 0" in texts and "fact 4" in texts and len(cap_list) == 3, str(texts))
+    # tolerant JSON-array extraction
+    check("memory: parse array from fenced prose",
+          memory._extract_json_array('Sure!\n```json\n["a", "b"]\n```') == ["a", "b"])
+    check("memory: parse rejects non-array", memory._extract_json_array("no json here") is None)
+    # prompt rendering: pinned first, cross-scope dedupe, empty -> no block
+    story_m = [{"text": "Story fact.", "pinned": False, "created": 2}]
+    char_m = [{"text": "Pinned char fact.", "pinned": True, "created": 1}, {"text": "Story fact.", "created": 3}]
+    block = context.memories_block(story_m, char_m, "Aria", 1000)
+    check("memory: block lists pinned first", block.index("Pinned char fact.") < block.index("Story fact."), block)
+    check("memory: block dedupes across scopes", block.count("Story fact.") == 1, block)
+    check("memory: empty banks -> no block", context.memories_block([], [], "Aria", 1000) == "")
+
+
 # ============================================================ integration test
 
 _last_payload = {}
@@ -383,6 +413,10 @@ def _start_fake_ollama(port):
                 return JSONResponse({"message": {"content": (
                     '{"name":"Ember","description":"A fire mage.","personality":"Bold.",'
                     '"scenario":"A ruined tower.","greeting":"*flames flicker* Hello."}')},
+                    "done": True})
+            if "memory archivist" in sysmsg:     # memory-extraction path -> JSON array
+                return JSONResponse({"message": {"content":
+                    '["Sam is a tired traveler.", "Aria runs the tavern on a rainy night."]'},
                     "done": True})
             return JSONResponse({"message": {"content": "- A thing happened."}, "done": True})
         _last_payload.clear()
@@ -743,6 +777,65 @@ def test_integration():
           client.post("/api/stories/nope/background",
                       json={"data_b64": base64.b64encode(png).decode(), "ext": "png"}).status_code == 404)
 
+    # --- durable memory: CRUD + injection + auto-capture --------------------
+    mstory = client.post("/api/stories", json={"title": "Mem", "character_id": char["id"],
+                                               "character_name": "Aria", "model": "mistral-nemo:12b",
+                                               "messages": [{"role": "assistant", "content": "Welcome in."}]}).json()
+    m1 = client.post(f"/api/stories/{mstory['id']}/memories", json={"text": "Sam prefers tea over ale."}).json()
+    check("api: add story memory", m1.get("ok") and m1["memory"]["text"] == "Sam prefers tea over ale.")
+    mid = m1["memory"]["id"]
+    client.put(f"/api/stories/{mstory['id']}/memories/{mid}", json={"pinned": True})
+    got = client.get(f"/api/stories/{mstory['id']}/memories").json()
+    check("api: story memory pinned + listed", got["story"] and got["story"][0]["pinned"] is True)
+    check("api: memories endpoint exposes character scope", got["character_id"] == char["id"])
+    # a pinned memory is injected into the assembled prompt
+    dbg = client.get(f"/api/debug/prompt?story_id={mstory['id']}").json()
+    allc = "\n".join(m["content"] for m in dbg["messages"])
+    check("api: memory injected into prompt", "Sam prefers tea over ale." in allc and "remembers" in allc, allc[:200])
+    check("api: debug reports memories_injected", dbg["debug"].get("memories_injected", 0) >= 1)
+    client.put(f"/api/stories/{mstory['id']}/memories/{mid}", json={"text": "Sam loves strong tea."})
+    check("api: story memory edited",
+          client.get(f"/api/stories/{mstory['id']}/memories").json()["story"][0]["text"] == "Sam loves strong tea.")
+    check("api: delete story memory",
+          client.delete(f"/api/stories/{mstory['id']}/memories/{mid}").json().get("ok"))
+    check("api: story memory gone", client.get(f"/api/stories/{mstory['id']}/memories").json()["story"] == [])
+    # character-scope memory CRUD (persists across that character's stories)
+    cm = client.post(f"/api/characters/{char['id']}/memories", json={"text": "Aria keeps a cat named Soot."}).json()
+    check("api: add character memory", cm.get("ok") and cm["memory"]["text"].startswith("Aria keeps a cat"))
+    check("api: character memory shows for its stories",
+          any(x["text"].startswith("Aria keeps a cat")
+              for x in client.get(f"/api/stories/{mstory['id']}/memories").json()["character"]))
+    client.delete(f"/api/characters/{char['id']}/memories/{cm['memory']['id']}")
+    check("api: character memory deleted",
+          not any(x["text"].startswith("Aria keeps a cat")
+                  for x in client.get(f"/api/stories/{mstory['id']}/memories").json()["character"]))
+
+    # auto-capture: once enough new turns accumulate, the model extracts facts
+    # into BOTH the story and the character's lasting bank, and advances a cursor.
+    seed = [{"role": "assistant", "content": "Welcome in."}]
+    for i in range(4):
+        seed.append({"role": "user", "content": f"line {i}"})
+        seed.append({"role": "assistant", "content": f"reply {i}"})
+    astory = client.post("/api/stories", json={"title": "Auto", "character_id": bob["id"],
+                                               "character_name": "Bob", "model": "mistral-nemo:12b",
+                                               "messages": seed}).json()
+    r = client.post("/api/chat", json={"story_id": astory["id"], "action": "send", "user_message": "tell me more"})
+    done = [json.loads(l[6:]) for l in r.text.splitlines() if l.startswith("data: ") and '"done"' in l]
+    check("api: auto-memory flagged on the turn", done and done[-1].get("memorized") is True, r.text[-200:])
+    amem = client.get(f"/api/stories/{astory['id']}/memories").json()
+    check("api: auto-memory stored on the story",
+          any("tired traveler" in m["text"] for m in amem["story"]), str(amem["story"]))
+    check("api: auto-memory persisted to the character bank",
+          any("tired traveler" in m["text"] for m in amem["character"]), str(amem["character"]))
+    check("api: memory cursor advanced",
+          client.get(f"/api/stories/{astory['id']}").json().get("memory_cursor", 0) >= 9)
+    # auto_memory OFF halts extraction (cursor frozen)
+    client.put(f"/api/stories/{astory['id']}/meta", json={"settings": {"auto_memory": False}})
+    cursor_before = client.get(f"/api/stories/{astory['id']}").json().get("memory_cursor", 0)
+    client.post("/api/chat", json={"story_id": astory["id"], "action": "send", "user_message": "and then?"})
+    check("api: auto-memory off halts extraction",
+          client.get(f"/api/stories/{astory['id']}").json().get("memory_cursor", 0) == cursor_before)
+
 
 def main():
     print("Running AI Roleplayer backend self-test...\n")
@@ -750,7 +843,8 @@ def main():
                test_lorebook, test_assemble_order_and_budget, test_splice_depth,
                test_macro_resolution, test_depth_zero_and_est, test_cards_hardening,
                test_cards, test_rag, test_paper_features, test_ban_phrases,
-               test_storage_atomic, test_storage_id_safety, test_integration]:
+               test_storage_atomic, test_storage_id_safety, test_memory_logic,
+               test_integration]:
         try:
             fn()
         except Exception as e:

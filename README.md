@@ -19,10 +19,12 @@ Tavern character-card import.
 - 👥 **Group scenes** — put two or more characters in one story. A character
   replies automatically on your turn (mention a name to direct it), or tap a
   character to make them speak. Each reply is labelled with who's talking.
-- 🧠 **Real memory** — a keyword **lorebook** (world facts that surface only when
-  relevant), **rolling summarization** of older events, a floating **author's
-  note**, and optional **semantic recall (RAG)** via local embeddings keep long
-  stories coherent instead of goldfish-ing.
+- 🧠 **Real memory** — a durable **memory bank** the bot keeps and reuses (per
+  story *and* per character, so a character remembers you across scenes),
+  **auto-captured** as you play or curated by hand; plus a keyword **lorebook**,
+  **rolling summarization** of older events, a floating **author's note**, and
+  optional **semantic recall (RAG)** via local embeddings — long stories stay
+  coherent instead of goldfish-ing.
 - 💬 **Immersive streaming** — in-character replies that type out live, actions
   in *italics*, with a scope-controlled prompt that stops the model speaking for
   you or breaking character. Optional **text-to-speech** reads replies aloud.
@@ -121,7 +123,10 @@ Your browser opens at **<http://localhost:8000>**. Pick a character and play.
    to kill clichés. Click a story's **☆** (or a character's) to **pin** it to the top.
 5. The **author's note** bar above the composer is a private nudge to steer tone
    or what happens next — it's injected near the end of the prompt for max effect.
-6. **🌿 Branches** (header) save and restore alternate timelines; **⌨️** (or `?`)
+6. **🧠 Memories** (header) shows what the bot remembers — add/edit/pin facts for
+   this story, or lasting ones the character carries into every story. With
+   auto-memory on (Settings, default), it fills this in for you as you play.
+7. **🌿 Branches** (header) save and restore alternate timelines; **⌨️** (or `?`)
    lists keyboard shortcuts (`←/→` swap versions, `R` regenerate, `G` guided,
    `C` focus the composer, `Esc` close a dialog).
 

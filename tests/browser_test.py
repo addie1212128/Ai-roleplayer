@@ -63,6 +63,8 @@ def start_fake_ollama(port):
                     '{"name":"Ember","description":"A fire mage.","personality":"Bold.",'
                     '"scenario":"A ruined tower.","greeting":"*flames flicker* Hello."}')},
                     "done": True})
+            if "memory archivist" in sysmsg:
+                return JSONResponse({"message": {"content": '["A fact worth remembering."]'}, "done": True})
             return JSONResponse({"message": {"content": "- summary."}, "done": True})
 
         async def gen():
@@ -216,6 +218,7 @@ def main():
         page.click("#settings-btn")
         page.wait_for_selector("#settings-modal:not(.hidden)", timeout=3000)
         check("UI: tags field present", page.locator("#s-tags").count() == 1)
+        check("UI: auto-memory toggle present", page.locator("#s-automem").count() == 1)
         check("UI: scene-background controls present",
               page.locator("#s-bg-preview").count() == 1 and page.locator("#s-bg-upload").count() == 1
               and page.locator("#s-bg-clear").count() == 1)
@@ -245,6 +248,26 @@ def main():
         check("UI: story pins to top", page.locator("#story-list .list-item .act[title='Unpin']").count() >= 1)
         check("UI: character pin button present",
               page.locator("#character-list .list-item .act[title='Pin to top']").count() >= 1)
+
+        # ---- memories: open drawer, add a fact, pin it ----
+        check("UI: memory button present", page.locator("#memory-btn").count() == 1)
+        page.click("#memory-btn")
+        page.wait_for_selector("#memory-modal:not(.hidden)", timeout=3000)
+        check("UI: memory drawer opens", page.locator("#mem-story-list").count() == 1)
+        check("UI: character memory section present", page.locator("#mem-char-section").count() == 1)
+        page.fill("#mem-add-input", "Kael distrusts the royal guard.")
+        page.click("#mem-add-btn")
+        page.wait_for_function(
+            "[...document.querySelectorAll('#mem-story-list .mem-text')].some(e => e.textContent.includes('royal guard'))",
+            timeout=4000)
+        check("UI: memory added + listed",
+              page.evaluate("[...document.querySelectorAll('#mem-story-list .mem-text')].some(e => e.textContent.includes('royal guard'))"))
+        page.locator("#mem-story-list .mem-row .act.pin").first.click()
+        page.wait_for_function("!!document.querySelector('#mem-story-list .mem-row.pinned')", timeout=4000)
+        check("UI: memory can be pinned", page.locator("#mem-story-list .mem-row.pinned").count() >= 1)
+        page.keyboard.press("Escape")
+        page.wait_for_function("document.querySelector('#memory-modal').classList.contains('hidden')", timeout=3000)
+        check("UI: Escape closes memory drawer", page.locator("#memory-modal.hidden").count() == 1)
 
         # character editor opens with advanced fields
         page.click("#edit-active-char")
